@@ -18,3 +18,11 @@
 - `observation-result.schema.json`：场景、入口、菜单和可见表情辅助的结构化结果。
 - `speech-effect.schema.json`：经过优先级仲裁后交给播报层的效果。
 - `speech-input.schema.json`：手机或眼镜麦克风产生的统一语音输入。
+- `device-command.schema.json` / `device-event.schema.json`：设备命令和设备事实事件。
+- `media-transfer.schema.json`：图像/音频引用、哈希、过期时间和传输元数据。
+- `destination-query.schema.json` / `destination-candidates.schema.json`：语音目的地搜索和候选确认。
+- `session-snapshot.schema.json`：会话恢复所需的最小状态。
+- `contract-error.schema.json`：统一错误码、重试性和用户动作。
+- `crossing-advisory.schema.json`：路口检查的保守辅助建议，不代表安全通行保证。
+
+`examples/` 中的样例用于 Fake 和合同测试；样例不包含真实设备、个人图像或账号数据。

@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/device-command.schema.json",
+  "title": "Device command",
+  "type": "object",
+  "required": ["schema_version", "command_id", "session_id", "type", "issued_at", "payload"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "command_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "type": { "type": "string" },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "payload": { "type": "object" }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "type": { "const": "capture.requested" },
+        "payload": { "$ref": "#/$defs/captureRequested" }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "capture.cancelled" },
+        "payload": { "$ref": "#/$defs/captureCancelled" }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "speech.play" },
+        "payload": { "$ref": "#/$defs/speechPlay" }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "speech.cancel" },
+        "payload": { "$ref": "#/$defs/speechCancel" }
+      }
+    },
+    {
+      "properties": {
+        "type": { "const": "haptic.prompt" },
+        "payload": { "$ref": "#/$defs/hapticPrompt" }
+      }
+    }
+  ],
+  "$defs": {
+    "captureRequested": {
+      "type": "object",
+      "required": ["request_id", "kind"],
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "kind": { "enum": ["scene", "entrance", "menu", "expression", "intersection", "traffic_signal", "crosswalk"] },
+        "max_age_ms": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "captureCancelled": {
+      "type": "object",
+      "required": ["request_id"],
+      "properties": { "request_id": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    },
+    "speechPlay": {
+      "type": "object",
+      "required": ["effect_id"],
+      "properties": { "effect_id": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    },
+    "speechCancel": {
+      "type": "object",
+      "required": ["effect_id"],
+      "properties": { "effect_id": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    },
+    "hapticPrompt": {
+      "type": "object",
+      "required": ["pattern"],
+      "properties": {
+        "pattern": { "enum": ["short", "double", "long"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

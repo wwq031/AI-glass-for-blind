@@ -3,8 +3,9 @@
   "$id": "https://leqi-ai-glasses.dev/contracts/speech-effect.schema.json",
   "title": "Speech effect",
   "type": "object",
-  "required": ["effect_id", "session_id", "text", "priority", "source", "interruptible", "expires_at"],
+  "required": ["schema_version", "effect_id", "session_id", "text", "priority", "source", "interruptible", "expires_at"],
   "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
     "effect_id": { "type": "string" },
     "session_id": { "type": "string" },
     "text": { "type": "string", "minLength": 1 },

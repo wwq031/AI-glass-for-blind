@@ -79,6 +79,7 @@
 | 文件 | 作用 | 变更规则 |
 |---|---|---|
 | `packages/contracts/schemas/*.schema.json` | 跨端数据格式 | 先改 Schema，再改实现；破坏性变更提升主版本 |
+| `packages/contracts/examples/` | P0 正常/失败样例 | 作为 Fake、回放和合同测试的共同夹具 |
 | `packages/contracts/interfaces.md` | 跨模块接口形状 | 不把供应商 SDK 类型写入接口 |
 | `packages/testkit/` | Fake、fixture、回放工具 | 每个外部依赖都要有替身 |
 | `tests/contracts/` | Schema 和兼容性检查 | 每次合同变更必须运行 |
@@ -93,6 +94,8 @@
 3. 跨模块数据通过 `packages/contracts`，不直接传递供应商对象。
 4. 覆盖一个正常路径和一个失败路径，并能看到 `session_id`、事件序号和错误原因。
 5. 不提交账号令牌、原始设备 dump、APK、用户图像或音频。
+
+P0 合同闭合标准：设备命令/事件、媒体引用、语音输入、目的地查询/候选、导航路口事件、观察结果、路口辅助建议、会话快照和统一错误均有 Schema，并至少有一条正常样例和一条失败样例。
 
 ## 依赖顺序
 

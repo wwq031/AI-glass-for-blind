@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0",
+  "query_id": "query-001",
+  "session_id": "session-001",
+  "generated_at": "2026-09-19T09:00:01Z",
+  "candidates": [
+    {
+      "candidate_id": "poi-001",
+      "name": "约定餐厅",
+      "address": "示例路 1 号",
+      "category": "restaurant",
+      "distance_m": 820,
+      "provider": "map-simulator"
+    }
+  ]
+}

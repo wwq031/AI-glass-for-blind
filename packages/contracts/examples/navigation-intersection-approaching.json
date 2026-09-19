@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0",
+  "event_id": "nav-event-001",
+  "session_id": "session-001",
+  "sequence": 12,
+  "occurred_at": "2026-09-19T09:05:00Z",
+  "source": "navigation",
+  "type": "navigation.intersection_approaching",
+  "payload": {
+    "route_state": "active",
+    "instruction": "前方路口直行",
+    "distance_m": 24,
+    "location_confidence": "high",
+    "provider": "map-simulator",
+    "intersection_id": "intersection-001",
+    "maneuver": "straight",
+    "travel_heading_deg": 90
+  }
+}

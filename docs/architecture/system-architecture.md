@@ -70,7 +70,11 @@ idle
 
 ### ObservationProvider
 
-输入任务类型、图片引用和会话上下文，输出结构化观察结果。模型不能直接写入会话状态。
+输入任务类型、图片引用和会话上下文，输出结构化观察结果。路口任务只输出信号灯、方向、斑马线和车辆等可见事实；模型不能直接写入会话状态。
+
+### 路口协作
+
+导航产生 `navigation.intersection_approaching` 后，领域层播报检查提示并等待用户按键或语音确认。确认后才发送 `capture.requested`，图像通过 `MediaTransfer` 引用进入 `ObservationProvider`。`CrossingAdvisoryPolicy` 将观察事实和导航上下文合成为短时、保守的辅助建议；未知或过期结果统一进入等待/重查，不输出安全保证。
 
 ### SpeechOutput
 

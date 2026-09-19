@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/contract-error.schema.json",
+  "title": "Contract error",
+  "type": "object",
+  "required": ["schema_version", "error_id", "session_id", "occurred_at", "source", "code", "severity", "retryable", "user_action"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "error_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "source": { "enum": ["transport", "speech", "navigation", "vision", "storage", "system"] },
+    "code": {
+      "enum": ["transport_disconnected", "capture_failed", "speech_recognition_failed", "speech_low_confidence", "destination_not_found", "navigation_unavailable", "location_weak", "observation_timeout", "observation_low_confidence", "permission_denied", "unsupported", "unknown"]
+    },
+    "severity": { "enum": ["info", "warning", "critical"] },
+    "retryable": { "type": "boolean" },
+    "user_action": { "enum": ["none", "retry", "recheck", "wait", "cancel"] },
+    "message": { "type": "string" }
+  },
+  "additionalProperties": false
+}

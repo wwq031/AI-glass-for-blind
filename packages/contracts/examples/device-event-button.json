@@ -1,0 +1,11 @@
+{
+  "schema_version": "1.0",
+  "event_id": "device-event-001",
+  "session_id": "session-001",
+  "occurred_at": "2026-09-19T09:05:05Z",
+  "type": "button.pressed",
+  "payload": {
+    "button_id": "main",
+    "press_kind": "short"
+  }
+}

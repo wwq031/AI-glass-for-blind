@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "error_id": "error-001",
+  "session_id": "session-001",
+  "occurred_at": "2026-09-19T09:05:05Z",
+  "source": "transport",
+  "code": "capture_failed",
+  "severity": "warning",
+  "retryable": true,
+  "user_action": "retry",
+  "message": "眼镜拍摄失败，请重新按键。"
+}

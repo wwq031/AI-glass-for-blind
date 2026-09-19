@@ -1,0 +1,83 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/device-event.schema.json",
+  "title": "Device event",
+  "type": "object",
+  "required": ["schema_version", "event_id", "session_id", "occurred_at", "type", "payload"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "event_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "type": { "type": "string" },
+    "payload": { "type": "object" }
+  },
+  "oneOf": [
+    { "properties": { "type": { "const": "device.connected" }, "payload": { "$ref": "#/$defs/connected" } } },
+    { "properties": { "type": { "const": "device.disconnected" }, "payload": { "$ref": "#/$defs/disconnected" } } },
+    { "properties": { "type": { "const": "button.pressed" }, "payload": { "$ref": "#/$defs/buttonPressed" } } },
+    { "properties": { "type": { "const": "capture.completed" }, "payload": { "$ref": "#/$defs/captureCompleted" } } },
+    { "properties": { "type": { "const": "capture.failed" }, "payload": { "$ref": "#/$defs/captureFailed" } } },
+    { "properties": { "type": { "const": "speech.playback_completed" }, "payload": { "$ref": "#/$defs/speechCompleted" } } },
+    { "properties": { "type": { "const": "speech.playback_failed" }, "payload": { "$ref": "#/$defs/speechFailed" } } }
+  ],
+  "$defs": {
+    "connected": {
+      "type": "object",
+      "required": ["transport"],
+      "properties": { "transport": { "type": "string" }, "device_model": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "disconnected": {
+      "type": "object",
+      "required": ["reason", "retryable"],
+      "properties": { "reason": { "type": "string" }, "retryable": { "type": "boolean" } },
+      "additionalProperties": false
+    },
+    "buttonPressed": {
+      "type": "object",
+      "required": ["button_id", "press_kind"],
+      "properties": {
+        "button_id": { "type": "string", "minLength": 1 },
+        "press_kind": { "enum": ["short", "long", "double"] }
+      },
+      "additionalProperties": false
+    },
+    "captureCompleted": {
+      "type": "object",
+      "required": ["request_id", "media_id"],
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "media_id": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    },
+    "captureFailed": {
+      "type": "object",
+      "required": ["request_id", "error_code", "retryable"],
+      "properties": {
+        "request_id": { "type": "string", "minLength": 1 },
+        "error_code": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "speechCompleted": {
+      "type": "object",
+      "required": ["effect_id"],
+      "properties": { "effect_id": { "type": "string", "minLength": 1 } },
+      "additionalProperties": false
+    },
+    "speechFailed": {
+      "type": "object",
+      "required": ["effect_id", "error_code", "retryable"],
+      "properties": {
+        "effect_id": { "type": "string", "minLength": 1 },
+        "error_code": { "type": "string", "minLength": 1 },
+        "retryable": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/session-snapshot.schema.json",
+  "title": "Session snapshot",
+  "type": "object",
+  "required": ["schema_version", "session_id", "state", "last_sequence", "updated_at"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "session_id": { "type": "string", "minLength": 1 },
+    "state": {
+      "enum": ["idle", "destination_input", "destination_confirm", "navigating", "intersection_check", "approaching_destination", "entrance_check", "inside_restaurant", "menu_reading", "conversation_assist", "completed", "cancelled", "device_disconnected", "navigation_unavailable", "vision_timeout"]
+    },
+    "last_sequence": { "type": "integer", "minimum": 0 },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "destination": {
+      "type": "object",
+      "required": ["candidate_id", "name"],
+      "properties": { "candidate_id": { "type": "string" }, "name": { "type": "string" } },
+      "additionalProperties": false
+    },
+    "pending_observation": {
+      "type": "object",
+      "required": ["request_id", "kind"],
+      "properties": {
+        "request_id": { "type": "string" },
+        "kind": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/destination-candidates.schema.json",
+  "title": "Destination candidates",
+  "type": "object",
+  "required": ["schema_version", "query_id", "session_id", "generated_at", "candidates"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "query_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "candidates": {
+      "type": "array",
+      "maxItems": 5,
+      "items": {
+        "type": "object",
+        "required": ["candidate_id", "name", "provider"],
+        "properties": {
+          "candidate_id": { "type": "string", "minLength": 1 },
+          "name": { "type": "string", "minLength": 1 },
+          "address": { "type": "string" },
+          "category": { "type": "string" },
+          "distance_m": { "type": "number", "minimum": 0 },
+          "provider": { "type": "string", "minLength": 1 }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false
+}

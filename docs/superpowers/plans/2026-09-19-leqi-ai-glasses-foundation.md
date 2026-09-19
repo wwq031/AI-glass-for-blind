@@ -38,6 +38,15 @@
 - Create: `packages/contracts/schemas/observation-result.schema.json`
 - Create: `packages/contracts/schemas/speech-effect.schema.json`
 - Create: `packages/contracts/schemas/speech-input.schema.json`
+- Create: `packages/contracts/schemas/device-command.schema.json`
+- Create: `packages/contracts/schemas/device-event.schema.json`
+- Create: `packages/contracts/schemas/media-transfer.schema.json`
+- Create: `packages/contracts/schemas/destination-query.schema.json`
+- Create: `packages/contracts/schemas/destination-candidates.schema.json`
+- Create: `packages/contracts/schemas/session-snapshot.schema.json`
+- Create: `packages/contracts/schemas/contract-error.schema.json`
+- Create: `packages/contracts/schemas/crossing-advisory.schema.json`
+- Create: `packages/contracts/examples/`
 
 - [x] **Step 1: 定义统一事件信封**
   - 所有事件包含 `schema_version`、`event_id`、`session_id`、`sequence`、`occurred_at`、`source`、`type` 和 `payload`。

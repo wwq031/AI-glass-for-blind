@@ -1,14 +1,19 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://ai-glass-for-blind.local/contracts/speech-input.schema.json",
+  "$id": "https://leqi-ai-glasses.dev/contracts/speech-input.schema.json",
   "title": "SpeechInput",
   "type": "object",
-  "required": ["transcript", "confidence", "locale", "source"],
+  "required": ["schema_version", "input_id", "session_id", "occurred_at", "transcript", "confidence", "locale", "source", "is_final"],
   "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "input_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "occurred_at": { "type": "string", "format": "date-time" },
     "transcript": { "type": "string", "minLength": 1 },
     "confidence": { "type": "number", "minimum": 0, "maximum": 1 },
     "locale": { "type": "string", "minLength": 2 },
     "source": { "type": "string", "enum": ["phone_mic", "glasses_mic"] },
+    "is_final": { "type": "boolean" },
     "intent_hint": {
       "type": "string",
       "enum": ["destination", "confirmation", "query", "repeat", "cancel", "expression_request", "unknown"]

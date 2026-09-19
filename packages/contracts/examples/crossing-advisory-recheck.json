@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "advisory_id": "advisory-001",
+  "session_id": "session-001",
+  "observation_request_id": "observation-001",
+  "action": "recheck",
+  "confidence": "medium",
+  "issued_at": "2026-09-19T09:05:06Z",
+  "expires_at": "2026-09-19T09:05:08Z",
+  "reason_codes": ["signal_not_visible", "direction_unknown", "manual_confirmation_required"],
+  "speech_text": "暂时无法确认与你方向对应的信号灯，请停留并调整方向后重试。"
+}

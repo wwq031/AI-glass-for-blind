@@ -18,6 +18,8 @@
 | `idle` | `destination.input_requested` | 播报“请说目的地” | 说出目的地 |
 | `destination_confirm` | `destination.candidates_listed` | 播报候选 POI | 说“第一个”或别名 |
 | `navigating` | `navigation.started` | 开始关键节点提醒 | 行走 |
+| `intersection_check` | `navigation.intersection_approaching` | 播报“前方路口，需要检查时请按键或说检查” | 按键或说“检查” |
+| `crossing_advisory` | `observation.intersection_result` | 播报等待、重查或谨慎辅助建议 | 根据提示停留或继续确认 |
 | `approaching_destination` | `navigation.approaching_maneuver` | 播报接近目的地 | 准备观察 |
 | `entrance_check` | `observation.prompted` | 播报“请按键观察入口” | 按键拍摄 |
 | `inside_restaurant` | `observation.entrance_confirmed` | 播报入口结果 | 进入餐厅 |
@@ -32,6 +34,9 @@
 用户：去约定的餐厅。
 系统：找到一个候选，XX 餐厅。确认请说“确认”。
 系统：导航开始。前方约三十米右转。
+系统：前方路口，需要检查红绿灯时请按键或说“检查”。
+用户：检查。
+系统：暂时无法确认与你方向对应的信号灯，请停留并调整方向后重试。
 系统：即将到达，请按键观察入口。
 用户：按键。
 系统：前方看到餐厅招牌，入口在右前方，画面中没有足够依据判断门槛。
@@ -48,6 +53,9 @@
 - 用户全程不需要看手机屏幕；
 - 导航提醒和识图播报不会同时占用语音输出；
 - 接近目的地只提醒，不自动拍摄；
+- 接近路口时由 Agent 提醒，只有用户按键或语音确认后才拍摄；
+- 路口观察结果包含信号灯状态、方向匹配、斑马线、车辆活动和有效期；
+- 红灯、未知、过期、方向不匹配或低置信度时只能提示等待/重查；
 - 入口画面低置信度时明确要求重拍；
 - 菜单结果可以通过语音追问；
 - 表情辅助必须由用户明确请求，并输出不确定性；

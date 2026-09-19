@@ -1,0 +1,17 @@
+{
+  "schema_version": "1.0",
+  "session_id": "session-001",
+  "request_id": "observation-001",
+  "kind": "intersection",
+  "confidence": "medium",
+  "needs_retake": false,
+  "summary": "看到路口和斑马线，但未能确认与你行进方向对应的信号灯",
+  "risks": [{ "kind": "signal_uncertain" }],
+  "entities": [{ "kind": "traffic_signal", "state": "not_visible" }],
+  "limitations": ["signal_direction_unknown"],
+  "signal_state": "unknown",
+  "signal_direction_match": "unknown",
+  "crosswalk_present": "yes",
+  "vehicle_activity": "unknown",
+  "fresh_until": "2026-09-19T09:05:07Z"
+}

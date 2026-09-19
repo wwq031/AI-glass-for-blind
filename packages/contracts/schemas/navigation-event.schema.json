@@ -5,13 +5,13 @@
   "type": "object",
   "required": ["schema_version", "event_id", "session_id", "sequence", "occurred_at", "source", "type", "payload"],
   "properties": {
-    "schema_version": { "type": "string" },
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
     "event_id": { "type": "string" },
     "session_id": { "type": "string" },
     "sequence": { "type": "integer", "minimum": 0 },
     "occurred_at": { "type": "string", "format": "date-time" },
     "source": { "const": "navigation" },
-    "type": { "enum": ["navigation.started", "navigation.approaching_maneuver", "navigation.off_route", "navigation.rerouting", "navigation.location_quality_changed", "navigation.arrived", "navigation.stopped"] },
+    "type": { "enum": ["navigation.started", "navigation.approaching_maneuver", "navigation.intersection_approaching", "navigation.crosswalk_approaching", "navigation.off_route", "navigation.rerouting", "navigation.location_quality_changed", "navigation.arrived", "navigation.stopped"] },
     "payload": {
       "type": "object",
       "required": ["route_state"],
@@ -20,7 +20,10 @@
         "instruction": { "type": "string" },
         "distance_m": { "type": "number", "minimum": 0 },
         "location_confidence": { "enum": ["high", "medium", "low", "unknown"] },
-        "provider": { "type": "string" }
+        "provider": { "type": "string" },
+        "intersection_id": { "type": "string" },
+        "maneuver": { "enum": ["straight", "left", "right", "u_turn", "unknown"] },
+        "travel_heading_deg": { "type": "number", "minimum": 0, "maximum": 360 }
       },
       "additionalProperties": false
     }

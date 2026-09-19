@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/crossing-advisory.schema.json",
+  "title": "Crossing advisory",
+  "description": "保守的辅助建议，不代表安全通行保证。",
+  "type": "object",
+  "required": ["schema_version", "advisory_id", "session_id", "observation_request_id", "action", "confidence", "issued_at", "expires_at", "reason_codes", "speech_text"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "advisory_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "observation_request_id": { "type": "string", "minLength": 1 },
+    "action": { "enum": ["wait", "recheck", "proceed_with_caution", "cannot_determine"] },
+    "confidence": { "enum": ["high", "medium", "low", "unknown"] },
+    "issued_at": { "type": "string", "format": "date-time" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "reason_codes": {
+      "type": "array",
+      "items": { "enum": ["red_signal", "green_signal", "signal_not_visible", "direction_unknown", "vehicles_detected", "crosswalk_not_found", "image_stale", "location_weak", "low_confidence", "manual_confirmation_required"] }
+    },
+    "speech_text": { "type": "string", "minLength": 1 }
+  },
+  "additionalProperties": false
+}

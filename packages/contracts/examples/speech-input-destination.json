@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0",
+  "input_id": "input-001",
+  "session_id": "session-001",
+  "occurred_at": "2026-09-19T09:00:00Z",
+  "transcript": "去约定的餐厅",
+  "confidence": 0.96,
+  "locale": "zh-CN",
+  "source": "phone_mic",
+  "is_final": true,
+  "intent_hint": "destination"
+}
