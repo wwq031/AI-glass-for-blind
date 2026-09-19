@@ -59,4 +59,4 @@
 
 ## 开始贡献
 
-先阅读 [`CONTEXT.md`](CONTEXT.md)、[`docs/architecture/system-architecture.md`](docs/architecture/system-architecture.md)、[`packages/contracts/interfaces.md`](packages/contracts/interfaces.md)、[`docs/team/file-delivery-matrix.md`](docs/team/file-delivery-matrix.md) 和 [`docs/scenarios/golden-path-navigation-restaurant.md`](docs/scenarios/golden-path-navigation-restaurant.md)。实现前先遵守合同文件，不把具体 SDK 类型泄漏到 `packages/domain`。
+先阅读 [`CONTEXT.md`](CONTEXT.md)、[`docs/architecture/system-architecture.md`](docs/architecture/system-architecture.md)、[`docs/architecture/core-agent-design.md`](docs/architecture/core-agent-design.md)、[`packages/contracts/interfaces.md`](packages/contracts/interfaces.md)、[`docs/team/file-delivery-matrix.md`](docs/team/file-delivery-matrix.md) 和 [`docs/scenarios/golden-path-navigation-restaurant.md`](docs/scenarios/golden-path-navigation-restaurant.md)。实现前先遵守合同文件，不把具体 SDK 类型泄漏到 `packages/domain`。

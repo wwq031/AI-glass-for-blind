@@ -68,13 +68,14 @@
 |---|---|---|
 | `packages/domain/session-state.ts` | 会话状态 | `idle`、导航、入口观察、菜单阅读、追问和完成状态 |
 | `packages/domain/session-orchestrator.ts` | 唯一业务入口 | 将设备、导航和识图事件转换为领域效果；不依赖具体 SDK |
+| `packages/domain/agent/` | 核心 Agent 决策层 | 事件归一化、能力规划、策略、安全闸门、行动计划和回放审计 |
 | `packages/domain/speech-priority-policy.ts` | 播报仲裁 | 导航、风险、识图、用户追问按优先级排队和打断 |
 | `packages/providers/speech/speech-input.ts` | 语音输入抽象 | 统一手机/眼镜麦克风、ASR 结果和意图提示 |
 | `apps/phone-companion/src/speech/speech-input-adapter.ts` | ASR 适配 | 将平台语音识别结果转换为 `SpeechInput`，处理超时、低置信度和取消 |
 | `apps/phone-companion/src/session/session-runtime.ts` | 运行时组装 | 注入真实或模拟适配器，维护 `session_id` 和 `sequence` |
 | `tests/scenarios/golden-path-navigation-restaurant.test.*` | 端到端回放 | 覆盖导航、入口、菜单、追问、表情辅助和故障降级 |
 
-验收标准：完整流程无需手机屏幕；目的地、确认、菜单追问和表情请求均可用语音完成；系统提醒不会自动触发拍摄；导航播报和识图播报不会互相覆盖；所有事件可以按 `session_id + sequence` 回放。
+验收标准：完整流程无需手机屏幕；目的地、确认、菜单追问和表情请求均可用语音完成；系统提醒不会自动触发拍摄；Agent 不能直接调用设备或供应商 SDK；导航播报和识图播报不会互相覆盖；所有事件、事实、计划和拒绝原因可以按 `session_id + sequence` 回放。
 
 ## 共享合同和测试文件
 

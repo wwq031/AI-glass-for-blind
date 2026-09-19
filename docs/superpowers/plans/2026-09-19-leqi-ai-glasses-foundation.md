@@ -69,6 +69,8 @@
 - Create: `apps/phone-companion/README.md`
 - Create: `apps/gateway/README.md`
 - Create: `packages/domain/README.md`
+- Create: `packages/domain/policies/README.md`
+- Create: `docs/architecture/core-agent-design.md`
 - Create: `packages/providers/README.md`
 - Create: `packages/testkit/README.md`
 - Create: `docs/team/parallel-work.md`
@@ -76,7 +78,6 @@
 - Create: `packages/contracts/capabilities/registry.json`
 - Create: `packages/contracts/capabilities/README.md`
 - Create: `packages/contracts/capabilities/voice/`
-- Create: `packages/domain/policies/README.md`
 - Create: `packages/providers/registry/README.md`
 
 - [x] **Step 1: 说明眼镜端职责**
@@ -86,7 +87,7 @@
 - [x] **Step 3: 说明网关职责**
   - 作为可选模型中转；第一阶段允许嵌入手机端。
 - [x] **Step 4: 说明领域核心和测试替身**
-  - 核心状态机不能导入 Android、JSUI、CXR 或具体模型 SDK。
+  - 核心状态机和 Agent 不能导入 Android、JSUI、CXR 或具体模型 SDK；模型只能提出结构化计划候选。
 - [x] **Step 5: 说明组员分工和合并规则**
   - 每个方向先遵守协议文件，使用模拟适配器并行开发。
 
