@@ -69,6 +69,7 @@
 | `packages/domain/session-state.ts` | 会话状态 | `idle`、导航、入口观察、菜单阅读、追问和完成状态 |
 | `packages/domain/session-orchestrator.ts` | 唯一业务入口 | 将设备、导航和识图事件转换为领域效果；不依赖具体 SDK |
 | `packages/domain/agent/` | 核心 Agent 决策层 | 事件归一化、能力规划、策略、安全闸门、行动计划和回放审计 |
+| `packages/providers/registry/tool-registry.json` | Tool 注册表 | 区分模型、策略和内部工具，声明 Schema、风险、超时、重试和事件 |
 | `packages/domain/speech-priority-policy.ts` | 播报仲裁 | 导航、风险、识图、用户追问按优先级排队和打断 |
 | `packages/providers/speech/speech-input.ts` | 语音输入抽象 | 统一手机/眼镜麦克风、ASR 结果和意图提示 |
 | `apps/phone-companion/src/speech/speech-input-adapter.ts` | ASR 适配 | 将平台语音识别结果转换为 `SpeechInput`，处理超时、低置信度和取消 |
@@ -85,6 +86,7 @@
 | `packages/contracts/examples/` | P0 正常/失败样例 | 作为 Fake、回放和合同测试的共同夹具 |
 | `packages/contracts/interfaces.md` | 跨模块接口形状 | 不把供应商 SDK 类型写入接口 |
 | `packages/testkit/` | Fake、fixture、回放工具 | 每个外部依赖都要有替身 |
+| `packages/testkit/tool-loop-fixtures/` | Tool Loop 回放夹具 | 验证授权拒绝、幂等、超时、事实过期和失败降级 |
 | `tests/contracts/` | Schema 和兼容性检查 | 每次合同变更必须运行 |
 | `tests/scenarios/` | 场景验收和回归 | 以黄金场景为最小端到端标准 |
 

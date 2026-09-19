@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/observation-tool-input.schema.json",
+  "title": "Observation tool input",
+  "type": "object",
+  "required": ["capability_id", "capture_mode", "consent"],
+  "properties": {
+    "capability_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "capture_mode": { "enum": ["single_frame", "short_window"] },
+    "consent": { "enum": ["explicit", "preauthorized"] },
+    "context": { "type": "object" },
+    "request_reason": { "type": "string" },
+    "max_age_ms": { "type": "integer", "minimum": 0 }
+  },
+  "additionalProperties": false
+}

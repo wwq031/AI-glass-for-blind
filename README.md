@@ -47,7 +47,7 @@
 
 - `apps/`：可运行端的目录和实现入口。
 - `packages/contracts/`：跨端事件、命令和结果的唯一事实来源。
-- `packages/domain/`：设备无关的会话状态机和策略。
+- `packages/domain/`：设备无关的会话状态机、核心 Agent 和策略。
 - `packages/providers/`：地图、视觉、OCR、播报等适配器接口。
 - `research/`：ADB、JSUI 和手机 APK 逆向证据，不作为生产源码。
 - `docs/`：需求、架构、协议、场景和团队协作约定。
@@ -59,4 +59,4 @@
 
 ## 开始贡献
 
-先阅读 [`CONTEXT.md`](CONTEXT.md)、[`docs/architecture/system-architecture.md`](docs/architecture/system-architecture.md)、[`docs/architecture/core-agent-design.md`](docs/architecture/core-agent-design.md)、[`packages/contracts/interfaces.md`](packages/contracts/interfaces.md)、[`docs/team/file-delivery-matrix.md`](docs/team/file-delivery-matrix.md) 和 [`docs/scenarios/golden-path-navigation-restaurant.md`](docs/scenarios/golden-path-navigation-restaurant.md)。实现前先遵守合同文件，不把具体 SDK 类型泄漏到 `packages/domain`。
+先阅读 [`CONTEXT.md`](CONTEXT.md)、[`docs/architecture/system-architecture.md`](docs/architecture/system-architecture.md)、[`docs/architecture/core-agent-design.md`](docs/architecture/core-agent-design.md)、[`docs/architecture/tool-system.md`](docs/architecture/tool-system.md)、[`packages/contracts/interfaces.md`](packages/contracts/interfaces.md)、[`docs/team/file-delivery-matrix.md`](docs/team/file-delivery-matrix.md) 和 [`docs/scenarios/golden-path-navigation-restaurant.md`](docs/scenarios/golden-path-navigation-restaurant.md)。实现前先遵守合同文件，不把具体 SDK 类型泄漏到 `packages/domain`。

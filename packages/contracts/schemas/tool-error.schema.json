@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/tool-error.schema.json",
+  "title": "Tool error",
+  "type": "object",
+  "required": ["schema_version", "call_id", "session_id", "tool_id", "error"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "call_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "tool_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "error": { "$ref": "contract-error.schema.json" }
+  },
+  "additionalProperties": false
+}

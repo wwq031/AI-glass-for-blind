@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/tool-result.schema.json",
+  "title": "Tool result",
+  "type": "object",
+  "required": ["schema_version", "call_id", "session_id", "tool_id", "status", "completed_at", "output", "events", "facts"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "call_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "tool_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "status": { "enum": ["succeeded", "partial", "failed", "denied", "expired", "cancelled"] },
+    "completed_at": { "type": "string", "format": "date-time" },
+    "output": { "type": "object" },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["type"],
+        "properties": { "type": { "type": "string" }, "payload": { "type": "object" } },
+        "additionalProperties": false
+      }
+    },
+    "facts": { "type": "array", "items": { "$ref": "fact.schema.json" } },
+    "error": { "$ref": "contract-error.schema.json" }
+  },
+  "additionalProperties": false
+}

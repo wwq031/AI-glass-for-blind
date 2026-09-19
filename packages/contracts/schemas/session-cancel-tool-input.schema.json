@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/session-cancel-tool-input.schema.json",
+  "title": "Session cancel tool input",
+  "type": "object",
+  "required": ["reason"],
+  "properties": { "reason": { "type": "string", "minLength": 1 }, "user_initiated": { "type": "boolean" } },
+  "additionalProperties": false
+}

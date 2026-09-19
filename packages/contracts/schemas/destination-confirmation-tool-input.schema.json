@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/destination-confirmation-tool-input.schema.json",
+  "title": "Destination confirmation tool input",
+  "type": "object",
+  "required": ["candidate_id"],
+  "properties": { "candidate_id": { "type": "string", "minLength": 1 } },
+  "additionalProperties": false
+}

@@ -49,6 +49,17 @@
 - Create: `packages/contracts/schemas/fact.schema.json`
 - Create: `packages/contracts/schemas/capability-definition.schema.json`
 - Create: `packages/contracts/schemas/capability-registry.schema.json`
+- Create: `packages/contracts/schemas/tool-definition.schema.json`
+- Create: `packages/contracts/schemas/tool-registry.schema.json`
+- Create: `packages/contracts/schemas/tool-call.schema.json`
+- Create: `packages/contracts/schemas/tool-result.schema.json`
+- Create: `packages/contracts/schemas/tool-error.schema.json`
+- Create: `packages/contracts/schemas/observation-tool-input.schema.json`
+- Create: `packages/contracts/schemas/speech-ask-user.schema.json`
+- Create: `packages/contracts/schemas/navigation-start-tool-input.schema.json`
+- Create: `packages/contracts/schemas/destination-confirmation-tool-input.schema.json`
+- Create: `packages/contracts/schemas/facts-query-tool-input.schema.json`
+- Create: `packages/contracts/schemas/session-cancel-tool-input.schema.json`
 - Create: `packages/contracts/examples/`
 
 - [x] **Step 1: 定义统一事件信封**
@@ -79,6 +90,10 @@
 - Create: `packages/contracts/capabilities/README.md`
 - Create: `packages/contracts/capabilities/voice/`
 - Create: `packages/providers/registry/README.md`
+- Create: `packages/providers/registry/tool-registry.json`
+- Create: `packages/domain/agent/README.md`
+- Create: `packages/testkit/tool-loop-fixtures/README.md`
+- Create: `docs/architecture/tool-system.md`
 
 - [x] **Step 1: 说明眼镜端职责**
   - 只负责按键、摄像、设备反馈和播报，不承载地图和长期 Agent 状态。

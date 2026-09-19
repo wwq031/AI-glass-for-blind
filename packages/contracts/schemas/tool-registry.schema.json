@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/tool-registry.schema.json",
+  "title": "Tool registry",
+  "type": "object",
+  "required": ["schema_version", "tools"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "tools": { "type": "array", "items": { "$ref": "tool-definition.schema.json" } }
+  },
+  "additionalProperties": false
+}

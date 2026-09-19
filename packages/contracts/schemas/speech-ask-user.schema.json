@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/speech-ask-user.schema.json",
+  "title": "Speech ask user input",
+  "type": "object",
+  "required": ["prompt_template", "expected_intents", "expires_at"],
+  "properties": {
+    "prompt_template": { "type": "string", "minLength": 1 },
+    "parameters": { "type": "object" },
+    "expected_intents": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "expires_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false
+}

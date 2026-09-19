@@ -27,6 +27,8 @@
 - `fact.schema.json`：跨能力通用的命名事实。
 - `capability-definition.schema.json`：能力注册项的结构。
 - `capability-registry.schema.json`：能力注册表的结构。
+- `tool-definition.schema.json` / `tool-call.schema.json` / `tool-result.schema.json`：Tool Loop 的定义、调用和结果。
+- `tool-registry.schema.json`：Tool 注册表的结构。
 
 `capabilities/registry.json` 是观察能力的注册表。新增普通观察能力时优先新增注册项和事实 Schema，不修改会话核心合同。
 
