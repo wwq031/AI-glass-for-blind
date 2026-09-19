@@ -35,9 +35,10 @@ subscribe(listener: NavigationEventListener) -> Unsubscribe
 
 ```text
 observe(request: ObservationRequest) -> ObservationResult
+supports(capabilityId: string) -> boolean
 ```
 
-结果必须包含任务类型、摘要、置信度、是否需要重拍和可选风险/文字/实体信息。路口类观察还可以返回信号灯状态、方向是否匹配、斑马线、车辆活动和结果有效期；这些是视觉事实，不是安全保证。
+请求使用能力注册表中的 `capability_id`，而不是在核心接口中增加场景枚举。结果必须包含状态、摘要、聚合置信度、是否需要重拍和 `facts[]`。路口能力可以通过 `traffic_signal.state`、`traffic_signal.direction_match`、`crosswalk.present` 等事实返回信号灯、方向、斑马线和车辆信息；这些是视觉事实，不是安全保证。
 
 ## CrossingAdvisoryPolicy
 
@@ -45,7 +46,7 @@ observe(request: ObservationRequest) -> ObservationResult
 advise(observation: ObservationResult, navigation: NavigationContext) -> CrossingAdvisory
 ```
 
-只允许输出 `wait`、`recheck`、`proceed_with_caution` 或 `cannot_determine`。图像过期、方向不匹配、低置信度、车辆风险或信号灯不可见时不得输出确定性的可通行结论。
+策略通过事实名称匹配规则，不依赖某个 Provider 的专用字段。只允许输出 `wait`、`recheck`、`proceed_with_caution` 或 `cannot_determine`。图像过期、方向不匹配、低置信度、车辆风险或信号灯不可见时不得输出确定性的可通行结论。
 
 ## SpeechOutput
 

@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "templates": {
+    "summary": "{summary}",
+    "retake": "{summary} 请调整方向后重新观察。",
+    "unavailable": "暂时无法完成观察，请稍后重试。"
+  }
+}

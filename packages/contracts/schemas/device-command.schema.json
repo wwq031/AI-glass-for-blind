@@ -48,10 +48,11 @@
   "$defs": {
     "captureRequested": {
       "type": "object",
-      "required": ["request_id", "kind"],
+      "required": ["request_id", "capability_id"],
       "properties": {
         "request_id": { "type": "string", "minLength": 1 },
-        "kind": { "enum": ["scene", "entrance", "menu", "expression", "intersection", "traffic_signal", "crosswalk"] },
+        "capability_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+        "kind": { "type": "string", "description": "Deprecated compatibility alias; new commands use capability_id." },
         "max_age_ms": { "type": "integer", "minimum": 0 }
       },
       "additionalProperties": false

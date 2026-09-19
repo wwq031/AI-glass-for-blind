@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/capabilities/traffic-signal-facts.schema.json",
+  "title": "Traffic signal capability facts",
+  "type": "object",
+  "required": ["facts"],
+  "properties": {
+    "facts": {
+      "type": "array",
+      "items": {
+        "$ref": "../schemas/fact.schema.json"
+      }
+    }
+  },
+  "additionalProperties": false
+}

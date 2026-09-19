@@ -24,5 +24,10 @@
 - `session-snapshot.schema.json`：会话恢复所需的最小状态。
 - `contract-error.schema.json`：统一错误码、重试性和用户动作。
 - `crossing-advisory.schema.json`：路口检查的保守辅助建议，不代表安全通行保证。
+- `fact.schema.json`：跨能力通用的命名事实。
+- `capability-definition.schema.json`：能力注册项的结构。
+- `capability-registry.schema.json`：能力注册表的结构。
+
+`capabilities/registry.json` 是观察能力的注册表。新增普通观察能力时优先新增注册项和事实 Schema，不修改会话核心合同。
 
 `examples/` 中的样例用于 Fake 和合同测试；样例不包含真实设备、个人图像或账号数据。

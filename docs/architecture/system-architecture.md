@@ -16,7 +16,7 @@
 
 ### 供应商适配器
 
-`packages/providers` 约束地图、视觉、OCR 和播报的最小接口。高德、Coze、云端 VLM、手机端 VLM 和模拟器均通过适配器接入。
+`packages/providers` 约束地图、视觉、OCR 和播报的最小接口。高德、Coze、云端 VLM、手机端 VLM 和模拟器均通过适配器接入。视觉能力通过 `packages/contracts/capabilities/registry.json` 按 `capability_id` 注册，结果统一为命名事实。
 
 ### 可选网关
 
@@ -70,7 +70,7 @@ idle
 
 ### ObservationProvider
 
-输入任务类型、图片引用和会话上下文，输出结构化观察结果。路口任务只输出信号灯、方向、斑马线和车辆等可见事实；模型不能直接写入会话状态。
+输入能力 ID、图片引用和会话上下文，输出带 `facts[]` 的结构化观察结果。路口能力只输出信号灯、方向、斑马线和车辆等可见事实；模型不能直接写入会话状态。
 
 ### 路口协作
 

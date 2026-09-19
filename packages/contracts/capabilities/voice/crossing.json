@@ -1,0 +1,9 @@
+{
+  "schema_version": "1.0",
+  "templates": {
+    "wait": "{speech_text}",
+    "recheck": "{speech_text}",
+    "proceed_with_caution": "{speech_text} 请继续留意周围车辆。",
+    "cannot_determine": "{speech_text}"
+  }
+}

@@ -3,32 +3,19 @@
   "$id": "https://leqi-ai-glasses.dev/contracts/observation-request.schema.json",
   "title": "Observation request",
   "type": "object",
-  "required": ["schema_version", "session_id", "request_id", "kind", "trigger", "media_ref", "consent"],
+  "required": ["schema_version", "session_id", "request_id", "capability_id", "trigger", "media_refs", "consent"],
   "properties": {
     "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
     "session_id": { "type": "string" },
     "request_id": { "type": "string" },
-    "kind": { "enum": ["scene", "entrance", "menu", "expression", "intersection", "traffic_signal", "crosswalk"] },
+    "capability_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "kind": { "type": "string", "description": "Deprecated compatibility alias; new capabilities use capability_id." },
     "trigger": { "enum": ["user_button", "reminder_confirmed", "future_authorized_policy"] },
-    "media_ref": { "type": "string", "minLength": 1 },
+    "media_refs": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
     "user_intent": { "type": "string" },
-    "navigation_context": {
-      "type": "object",
-      "properties": {
-        "intersection_id": { "type": "string" },
-        "distance_m": { "type": "number", "minimum": 0 },
-        "travel_heading_deg": { "type": "number", "minimum": 0, "maximum": 360 },
-        "maneuver": { "enum": ["straight", "left", "right", "u_turn", "unknown"] }
-      },
-      "additionalProperties": false
-    },
+    "context": { "type": "object" },
+    "policy": { "type": "object" },
     "consent": { "enum": ["explicit", "preauthorized", "not_applicable"] }
   },
-  "allOf": [
-    {
-      "if": { "properties": { "kind": { "enum": ["intersection", "traffic_signal", "crosswalk"] } } },
-      "then": { "required": ["navigation_context"] }
-    }
-  ],
   "additionalProperties": false
 }

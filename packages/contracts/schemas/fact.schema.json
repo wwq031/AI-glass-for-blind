@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/fact.schema.json",
+  "title": "Observation fact",
+  "description": "可被领域策略消费的命名事实。新增能力通过新增 fact name，而不是修改核心结果结构。",
+  "type": "object",
+  "required": ["name", "value", "confidence"],
+  "properties": {
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "value": {},
+    "confidence": { "enum": ["high", "medium", "low", "unknown"] },
+    "valid_until": { "type": "string", "format": "date-time" },
+    "source": { "type": "string" },
+    "evidence": { "type": "array", "items": { "type": "string" } }
+  },
+  "additionalProperties": false
+}

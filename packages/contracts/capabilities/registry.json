@@ -1,0 +1,55 @@
+{
+  "schema_version": "1.0",
+  "capabilities": [
+    {
+      "id": "vision.scene",
+      "version": "1.0",
+      "provider": "vision-router",
+      "policy": "observation-summary",
+      "request_schema": "../schemas/observation-request.schema.json",
+      "result_schema": "../schemas/observation-result.schema.json",
+      "voice_templates": "voice/observation.json",
+      "consent": "explicit"
+    },
+    {
+      "id": "vision.entrance",
+      "version": "1.0",
+      "provider": "vision-router",
+      "policy": "entrance-assistance",
+      "request_schema": "../schemas/observation-request.schema.json",
+      "result_schema": "../schemas/observation-result.schema.json",
+      "voice_templates": "voice/observation.json",
+      "consent": "explicit"
+    },
+    {
+      "id": "vision.menu",
+      "version": "1.0",
+      "provider": "vision-router",
+      "policy": "menu-summary",
+      "request_schema": "../schemas/observation-request.schema.json",
+      "result_schema": "../schemas/observation-result.schema.json",
+      "voice_templates": "voice/menu.json",
+      "consent": "explicit"
+    },
+    {
+      "id": "vision.expression",
+      "version": "1.0",
+      "provider": "vision-router",
+      "policy": "visible-expression-assistance",
+      "request_schema": "../schemas/observation-request.schema.json",
+      "result_schema": "../schemas/observation-result.schema.json",
+      "voice_templates": "voice/expression.json",
+      "consent": "explicit"
+    },
+    {
+      "id": "vision.traffic_signal",
+      "version": "1.0",
+      "provider": "vision-router",
+      "policy": "crossing-advisory",
+      "request_schema": "../schemas/observation-request.schema.json",
+      "result_schema": "traffic-signal-facts.schema.json",
+      "voice_templates": "voice/crossing.json",
+      "consent": "explicit"
+    }
+  ]
+}

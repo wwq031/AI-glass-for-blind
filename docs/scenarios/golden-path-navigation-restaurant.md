@@ -19,7 +19,7 @@
 | `destination_confirm` | `destination.candidates_listed` | 播报候选 POI | 说“第一个”或别名 |
 | `navigating` | `navigation.started` | 开始关键节点提醒 | 行走 |
 | `intersection_check` | `navigation.intersection_approaching` | 播报“前方路口，需要检查时请按键或说检查” | 按键或说“检查” |
-| `crossing_advisory` | `observation.intersection_result` | 播报等待、重查或谨慎辅助建议 | 根据提示停留或继续确认 |
+| `crossing_advisory` | `observation.result_received(capability_id=vision.traffic_signal)` | 播报等待、重查或谨慎辅助建议 | 根据提示停留或继续确认 |
 | `approaching_destination` | `navigation.approaching_maneuver` | 播报接近目的地 | 准备观察 |
 | `entrance_check` | `observation.prompted` | 播报“请按键观察入口” | 按键拍摄 |
 | `inside_restaurant` | `observation.entrance_confirmed` | 播报入口结果 | 进入餐厅 |

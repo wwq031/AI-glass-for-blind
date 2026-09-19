@@ -51,14 +51,16 @@
 
 | 文件 | 功能 | 必须交付 |
 |---|---|---|
-| `packages/providers/vision/observation-provider.ts` | 视觉能力抽象 | 统一接收 `ObservationRequest`，返回 `ObservationResult` |
-| `apps/gateway/src/vision/vision-router.ts` | 视觉任务路由 | 按 `scene`、`entrance`、`menu`、`expression` 选择模型或 OCR |
+| `packages/providers/vision/observation-provider.ts` | 视觉能力抽象 | 按 `capability_id` 路由，统一返回 `ObservationResult.facts[]` |
+| `apps/gateway/src/vision/vision-router.ts` | 视觉能力路由 | 从能力注册表选择模型或 OCR，不在路由器里堆场景分支 |
 | `apps/gateway/src/vision/ocr-adapter.ts` | 菜单文字识别 | 输出菜名、价格、限制条件和识别置信度 |
-| `apps/gateway/src/vision/scene-adapter.ts` | 场景/入口识别 | 输出招牌、入口方向、可见风险和未知项 |
-| `apps/gateway/src/vision/expression-adapter.ts` | 可见表情辅助 | 仅处理用户明确请求的单帧观察，禁止身份识别和真实情绪推断 |
+| `apps/gateway/src/vision/scene-adapter.ts` | 场景/入口能力实现 | 输出命名事实，不直接改变会话状态 |
+| `apps/gateway/src/vision/expression-adapter.ts` | 可见表情能力实现 | 仅处理用户明确请求的单帧观察，禁止身份识别和真实情绪推断 |
+| `packages/contracts/capabilities/registry.json` | 能力注册表 | 声明能力 ID、Provider、结果 Schema、策略和语音模板 |
+| `packages/domain/policies/` | 声明式领域策略 | 按事实和上下文生成统一领域效果，不为每个场景复制编排流程 |
 | `packages/testkit/observation-fixtures/` | 视觉测试夹具 | 脱敏图片、期望结构、低置信度和超时样例 |
 
-验收标准：四类任务都返回合同规定的摘要、置信度、重拍建议和限制；低置信度不会伪装成确定事实；模型超时、图像模糊和服务不可用都可被上层处理。
+验收标准：能力都返回合同规定的状态、摘要、置信度、事实、重拍建议和限制；新增能力不要求修改 `SessionOrchestrator`；低置信度不会伪装成确定事实；模型超时、图像模糊和服务不可用都可被上层处理。
 
 ## 负责人 D：系统集成与会话编排
 
@@ -95,7 +97,7 @@
 4. 覆盖一个正常路径和一个失败路径，并能看到 `session_id`、事件序号和错误原因。
 5. 不提交账号令牌、原始设备 dump、APK、用户图像或音频。
 
-P0 合同闭合标准：设备命令/事件、媒体引用、语音输入、目的地查询/候选、导航路口事件、观察结果、路口辅助建议、会话快照和统一错误均有 Schema，并至少有一条正常样例和一条失败样例。
+P0 合同闭合标准：设备命令/事件、媒体引用、语音输入、目的地查询/候选、导航路口事件、通用观察请求/结果、能力注册表、命名事实、路口辅助建议、会话快照和统一错误均有 Schema，并至少有一条正常样例和一条失败样例。新增普通观察能力不得要求修改 `SessionOrchestrator` 或基础观察结果结构。
 
 ## 依赖顺序
 

@@ -2,16 +2,19 @@
   "schema_version": "1.0",
   "session_id": "session-001",
   "request_id": "observation-001",
-  "kind": "intersection",
+  "capability_id": "vision.traffic_signal",
+  "status": "partial",
   "confidence": "medium",
   "needs_retake": false,
   "summary": "看到路口和斑马线，但未能确认与你行进方向对应的信号灯",
-  "risks": [{ "kind": "signal_uncertain" }],
+  "facts": [
+    { "name": "traffic_signal.state", "value": "unknown", "confidence": "medium", "valid_until": "2026-09-19T09:05:07Z" },
+    { "name": "traffic_signal.direction_match", "value": "unknown", "confidence": "low", "valid_until": "2026-09-19T09:05:07Z" },
+    { "name": "crosswalk.present", "value": true, "confidence": "high", "valid_until": "2026-09-19T09:05:07Z" },
+    { "name": "vehicle.activity", "value": "unknown", "confidence": "low", "valid_until": "2026-09-19T09:05:07Z" }
+  ],
+  "risks": [{ "name": "crossing.signal_uncertain", "value": true, "confidence": "medium" }],
   "entities": [{ "kind": "traffic_signal", "state": "not_visible" }],
   "limitations": ["signal_direction_unknown"],
-  "signal_state": "unknown",
-  "signal_direction_match": "unknown",
-  "crosswalk_present": "yes",
-  "vehicle_activity": "unknown",
   "fresh_until": "2026-09-19T09:05:07Z"
 }

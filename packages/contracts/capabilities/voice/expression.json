@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "templates": {
+    "summary": "{summary} 这只是对可见表情的有限描述，不能代表真实情绪。",
+    "retake": "画面不清楚，请重新观察。",
+    "unavailable": "暂时无法完成表情辅助。"
+  }
+}

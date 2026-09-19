@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/capability-registry.schema.json",
+  "title": "Observation capability registry",
+  "type": "object",
+  "required": ["schema_version", "capabilities"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "capabilities": {
+      "type": "array",
+      "items": { "$ref": "capability-definition.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

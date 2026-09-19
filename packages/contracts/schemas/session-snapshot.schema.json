@@ -20,10 +20,11 @@
     },
     "pending_observation": {
       "type": "object",
-      "required": ["request_id", "kind"],
+      "required": ["request_id", "capability_id"],
       "properties": {
         "request_id": { "type": "string" },
-        "kind": { "type": "string" }
+        "capability_id": { "type": "string" },
+        "kind": { "type": "string", "description": "Deprecated compatibility alias." }
       },
       "additionalProperties": false
     }

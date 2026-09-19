@@ -3,30 +3,23 @@
   "$id": "https://leqi-ai-glasses.dev/contracts/observation-result.schema.json",
   "title": "Observation result",
   "type": "object",
-  "required": ["schema_version", "session_id", "request_id", "kind", "confidence", "needs_retake", "summary"],
+  "required": ["schema_version", "session_id", "request_id", "capability_id", "status", "confidence", "needs_retake", "summary", "facts"],
   "properties": {
     "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
     "session_id": { "type": "string" },
     "request_id": { "type": "string" },
-    "kind": { "enum": ["scene", "entrance", "menu", "expression", "intersection", "traffic_signal", "crosswalk"] },
+    "capability_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "kind": { "type": "string", "description": "Deprecated compatibility alias; new capabilities use capability_id." },
+    "status": { "enum": ["succeeded", "partial", "needs_retake", "failed", "unsupported"] },
     "confidence": { "enum": ["high", "medium", "low", "unknown"] },
     "needs_retake": { "type": "boolean" },
     "summary": { "type": "string" },
-    "risks": { "type": "array", "items": { "type": "object" } },
+    "facts": { "type": "array", "items": { "$ref": "fact.schema.json" } },
+    "risks": { "type": "array", "items": { "$ref": "fact.schema.json" } },
     "entities": { "type": "array", "items": { "type": "object" } },
     "ocr": { "type": "array", "items": { "type": "object" } },
     "limitations": { "type": "array", "items": { "type": "string" } },
-    "signal_state": { "enum": ["red", "yellow", "green", "flashing", "unknown", "not_visible"] },
-    "signal_direction_match": { "enum": ["yes", "no", "unknown"] },
-    "crosswalk_present": { "enum": ["yes", "no", "unknown"] },
-    "vehicle_activity": { "enum": ["none", "approaching", "stopped", "unknown"] },
     "fresh_until": { "type": "string", "format": "date-time" }
   },
-  "allOf": [
-    {
-      "if": { "properties": { "kind": { "enum": ["intersection", "traffic_signal", "crosswalk"] } } },
-      "then": { "required": ["signal_state", "signal_direction_match", "crosswalk_present", "vehicle_activity", "fresh_until"] }
-    }
-  ],
   "additionalProperties": false
 }

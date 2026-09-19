@@ -46,6 +46,9 @@
 - Create: `packages/contracts/schemas/session-snapshot.schema.json`
 - Create: `packages/contracts/schemas/contract-error.schema.json`
 - Create: `packages/contracts/schemas/crossing-advisory.schema.json`
+- Create: `packages/contracts/schemas/fact.schema.json`
+- Create: `packages/contracts/schemas/capability-definition.schema.json`
+- Create: `packages/contracts/schemas/capability-registry.schema.json`
 - Create: `packages/contracts/examples/`
 
 - [x] **Step 1: 定义统一事件信封**
@@ -53,7 +56,7 @@
 - [x] **Step 2: 定义导航事件**
   - 覆盖开始、接近转向、偏航、重新规划、GPS 弱、到达和停止。
 - [x] **Step 3: 定义观察请求与结果**
-  - 约束 `scene`、`entrance`、`menu`、`expression` 四类任务，以及置信度、重拍和风险字段。
+  - 以 `capability_id` 和 `facts[]` 支持可注册能力；P0 初始覆盖场景、入口、菜单、表情和路口观察，以及置信度、重拍和风险字段。
 - [x] **Step 4: 定义播报效果**
   - 固定优先级、是否可打断、来源和过期时间。
 - [x] **Step 5: 写适配器接口**
@@ -70,6 +73,11 @@
 - Create: `packages/testkit/README.md`
 - Create: `docs/team/parallel-work.md`
 - Create: `docs/team/file-delivery-matrix.md`
+- Create: `packages/contracts/capabilities/registry.json`
+- Create: `packages/contracts/capabilities/README.md`
+- Create: `packages/contracts/capabilities/voice/`
+- Create: `packages/domain/policies/README.md`
+- Create: `packages/providers/registry/README.md`
 
 - [x] **Step 1: 说明眼镜端职责**
   - 只负责按键、摄像、设备反馈和播报，不承载地图和长期 Agent 状态。

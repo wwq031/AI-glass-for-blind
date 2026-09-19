@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0",
+  "templates": {
+    "summary": "{summary} 你可以继续询问菜名、价格或限制条件。",
+    "retake": "菜单画面不清楚，请调整菜单位置后重新拍摄。",
+    "unavailable": "暂时无法读取菜单，请稍后重试。"
+  }
+}
