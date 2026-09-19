@@ -1,0 +1,19 @@
+# 跨端合同
+
+这里是手机、眼镜、网关和测试替身共享的唯一事件事实来源。合同使用 JSON Schema 表达，具体语言可以生成 TypeScript、Kotlin 或其他模型。
+
+## 版本规则
+
+- 所有合同带 `schema_version`。
+- 新增可选字段使用向后兼容方式；删除或改变含义必须提升主版本。
+- 事件使用 `session_id + sequence` 做会话内排序和去重。
+- 图片、音频和大文件通过引用或传输句柄表达，不把二进制直接塞进事件 JSON。
+- `payload` 只描述事实和结果，不放供应商 SDK 对象。
+
+## 主要合同
+
+- `event-envelope.schema.json`：所有事件的公共信封。
+- `navigation-event.schema.json`：手机地图产生的关键导航事件。
+- `observation-request.schema.json`：用户确认后的视觉观察请求。
+- `observation-result.schema.json`：场景、入口、菜单和可见表情辅助的结构化结果。
+- `speech-effect.schema.json`：经过优先级仲裁后交给播报层的效果。

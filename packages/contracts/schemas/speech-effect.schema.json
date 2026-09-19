@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/speech-effect.schema.json",
+  "title": "Speech effect",
+  "type": "object",
+  "required": ["effect_id", "session_id", "text", "priority", "source", "interruptible", "expires_at"],
+  "properties": {
+    "effect_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "text": { "type": "string", "minLength": 1 },
+    "priority": { "enum": ["critical", "high", "normal", "detail"] },
+    "source": { "enum": ["risk", "navigation", "observation", "system", "user_query"] },
+    "interruptible": { "type": "boolean" },
+    "expires_at": { "type": "string", "format": "date-time" },
+    "repeatable": { "type": "boolean" }
+  },
+  "additionalProperties": false
+}

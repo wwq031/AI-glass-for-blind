@@ -1,0 +1,36 @@
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+*.keystore
+*.jks
+*.p12
+
+# Android / Gradle
+.gradle/
+**/build/
+local.properties
+*.iml
+.idea/
+
+# Node / TypeScript
+node_modules/
+dist/
+coverage/
+.turbo/
+
+# Device and proprietary evidence
+*.apk
+*.aab
+*.aix
+*.zip
+*.7z
+device-dump/
+research/raw/
+research/phone-apk-analysis/raw/
+
+# Runtime and editor files
+.DS_Store
+Thumbs.db
+*.log
+*.tmp

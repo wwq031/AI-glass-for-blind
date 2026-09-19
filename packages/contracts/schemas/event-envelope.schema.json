@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/event-envelope.schema.json",
+  "title": "Domain event envelope",
+  "type": "object",
+  "required": ["schema_version", "event_id", "session_id", "sequence", "occurred_at", "source", "type", "payload"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "event_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "source": { "type": "string", "enum": ["glasses", "phone", "navigation", "vision", "agent", "system", "simulator"] },
+    "type": { "type": "string", "minLength": 1 },
+    "trace_id": { "type": "string" },
+    "payload": { "type": "object" }
+  },
+  "additionalProperties": false
+}

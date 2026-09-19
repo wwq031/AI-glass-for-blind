@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/observation-request.schema.json",
+  "title": "Observation request",
+  "type": "object",
+  "required": ["schema_version", "session_id", "request_id", "kind", "trigger", "media_ref"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "session_id": { "type": "string" },
+    "request_id": { "type": "string" },
+    "kind": { "enum": ["scene", "entrance", "menu", "expression"] },
+    "trigger": { "enum": ["user_button", "reminder_confirmed", "future_authorized_policy"] },
+    "media_ref": { "type": "string", "minLength": 1 },
+    "user_intent": { "type": "string" },
+    "navigation_context": { "type": "object" },
+    "consent": { "enum": ["explicit", "preauthorized", "not_applicable"] }
+  },
+  "additionalProperties": false
+}

@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/navigation-event.schema.json",
+  "title": "Navigation event",
+  "type": "object",
+  "required": ["schema_version", "event_id", "session_id", "sequence", "occurred_at", "source", "type", "payload"],
+  "properties": {
+    "schema_version": { "type": "string" },
+    "event_id": { "type": "string" },
+    "session_id": { "type": "string" },
+    "sequence": { "type": "integer", "minimum": 0 },
+    "occurred_at": { "type": "string", "format": "date-time" },
+    "source": { "const": "navigation" },
+    "type": { "enum": ["navigation.started", "navigation.approaching_maneuver", "navigation.off_route", "navigation.rerouting", "navigation.location_quality_changed", "navigation.arrived", "navigation.stopped"] },
+    "payload": {
+      "type": "object",
+      "required": ["route_state"],
+      "properties": {
+        "route_state": { "enum": ["active", "rerouting", "weak_location", "arrived", "stopped"] },
+        "instruction": { "type": "string" },
+        "distance_m": { "type": "number", "minimum": 0 },
+        "location_confidence": { "enum": ["high", "medium", "low", "unknown"] },
+        "provider": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
