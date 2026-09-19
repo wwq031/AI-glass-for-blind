@@ -59,6 +59,7 @@
 - Create: `packages/providers/README.md`
 - Create: `packages/testkit/README.md`
 - Create: `docs/team/parallel-work.md`
+- Create: `docs/team/file-delivery-matrix.md`
 
 - [x] **Step 1: 说明眼镜端职责**
   - 只负责按键、摄像、设备反馈和播报，不承载地图和长期 Agent 状态。

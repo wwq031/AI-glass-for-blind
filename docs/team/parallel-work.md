@@ -2,14 +2,16 @@
 
 ## 分工建议
 
-| 方向 | 目录 | 先交付什么 |
+当前采用“三个能力负责人 + 一个系统集成负责人”的方式：
+
+| 负责人 | 目录 | 先交付什么 |
 |---|---|---|
-| 领域与协议 | `packages/contracts`, `packages/domain` | 合同、状态机转移、策略测试 |
-| 眼镜端 | `apps/glasses-agent` | JSUI 按键、摄像和播报壳 |
-| 手机导航 | `apps/phone-companion` | 语音目的地、导航事件、提醒队列 |
-| CXR 研究 | `research/phone-apk-analysis`, `apps/phone-companion/transport` | 符号清单、适配器实验、连接降级 |
-| Agent/VLM | `apps/gateway`, `packages/providers` | 结构化观察结果和超时降级 |
-| 回放与验收 | `tests`, `packages/testkit` | 黄金场景脚本和跨模块回放 |
+| 协议与设备传输 | `packages/providers/transport`, `apps/glasses-agent`, `apps/phone-companion/src/transport`, `tools/protocol-inspector` | `DeviceTransport`、模拟器、CXR 适配、按键/拍摄/播报事件 |
+| 导航 | `packages/providers/navigation`, `apps/phone-companion/src/navigation` | 地图适配、定位、导航事实和确定性提醒 |
+| 基础识图 | `packages/providers/vision`, `apps/gateway/src/vision` | 场景、入口、菜单、OCR、表情辅助的结构化结果 |
+| 系统集成 | `packages/domain`, `apps/phone-companion/src/session`, `tests`, `packages/testkit` | 会话状态机、语音仲裁、故障降级和黄金场景回放 |
+
+每个方向的具体文件、接口和完成标准以 [`file-delivery-matrix.md`](file-delivery-matrix.md) 为准。
 
 ## 约束
 
