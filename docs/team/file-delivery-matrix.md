@@ -7,7 +7,7 @@
 ## 总体调用链
 
 ```text
-眼镜按键/摄像头
+语音输入 / 眼镜按键 / 摄像头
   → DeviceTransport
   → SessionOrchestrator
   → NavigationProvider / ObservationProvider
@@ -17,6 +17,8 @@
 ```
 
 协议负责人实现“设备事件如何进来、命令如何发出去”；导航和识图负责人实现“事实如何产生”；系统集成负责人实现“何时调用、如何排队、如何降级”。
+
+语音是所有语义交互的默认入口。实体键不替代语音输入，只负责唤起、拍摄确认、重拍、暂停/打断和紧急取消。
 
 ## 负责人 A：协议与设备传输
 
@@ -38,11 +40,12 @@
 |---|---|---|
 | `packages/providers/navigation/navigation-provider.ts` | 地图能力抽象 | 目的地确认、启动、停止、当前状态、导航事件订阅 |
 | `apps/phone-companion/src/navigation/map-adapter.ts` | 地图 SDK 适配 | POI 搜索、候选确认、路线启动、偏航重规划、到达事件 |
+| `apps/phone-companion/src/navigation/destination-service.ts` | 语音目的地服务 | 将 `SpeechInput` 转为 POI 搜索、候选播报和语音确认 |
 | `apps/phone-companion/src/navigation/location-service.ts` | 定位输入 | 位置更新、定位质量、权限失败和暂时失联状态 |
 | `packages/domain/navigation-reminder-policy.ts` | 确定性提醒策略 | 接近转向、偏航、重规划、到达等事件生成 `SpeechEffect` |
 | `packages/testkit/fake-navigation-provider.ts` | 导航模拟 | 可按脚本产生开始、转向、偏航、到达和 GPS 弱事件 |
 
-验收标准：用户不看手机即可完成目的地输入和确认；地图适配器只产生导航事实，不直接播放音频、不调用视觉模型；定位或地图不可用时有明确降级语音。
+验收标准：用户只通过语音即可完成目的地输入和候选确认，不需要手机屏幕；地图适配器只产生导航事实，不直接播放音频、不调用视觉模型；定位或地图不可用时有明确降级语音。
 
 ## 负责人 C：基础识图与 OCR
 
@@ -64,10 +67,12 @@
 | `packages/domain/session-state.ts` | 会话状态 | `idle`、导航、入口观察、菜单阅读、追问和完成状态 |
 | `packages/domain/session-orchestrator.ts` | 唯一业务入口 | 将设备、导航和识图事件转换为领域效果；不依赖具体 SDK |
 | `packages/domain/speech-priority-policy.ts` | 播报仲裁 | 导航、风险、识图、用户追问按优先级排队和打断 |
+| `packages/providers/speech/speech-input.ts` | 语音输入抽象 | 统一手机/眼镜麦克风、ASR 结果和意图提示 |
+| `apps/phone-companion/src/speech/speech-input-adapter.ts` | ASR 适配 | 将平台语音识别结果转换为 `SpeechInput`，处理超时、低置信度和取消 |
 | `apps/phone-companion/src/session/session-runtime.ts` | 运行时组装 | 注入真实或模拟适配器，维护 `session_id` 和 `sequence` |
 | `tests/scenarios/golden-path-navigation-restaurant.test.*` | 端到端回放 | 覆盖导航、入口、菜单、追问、表情辅助和故障降级 |
 
-验收标准：完整流程无需手机屏幕；系统提醒不会自动触发拍摄；导航播报和识图播报不会互相覆盖；所有事件可以按 `session_id + sequence` 回放。
+验收标准：完整流程无需手机屏幕；目的地、确认、菜单追问和表情请求均可用语音完成；系统提醒不会自动触发拍摄；导航播报和识图播报不会互相覆盖；所有事件可以按 `session_id + sequence` 回放。
 
 ## 共享合同和测试文件
 

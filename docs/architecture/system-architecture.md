@@ -8,7 +8,7 @@
 
 ### 手机端
 
-`apps/phone-companion` 是第一阶段的业务中心，负责短语音目的地输入、POI 确认、地图 SDK、定位质量、导航事件、系统提醒、会话持久化和 `DeviceTransport`。
+`apps/phone-companion` 是第一阶段的业务中心，负责语音输入、短语音目的地搜索、POI 确认、地图 SDK、定位质量、导航事件、系统提醒、会话持久化和 `DeviceTransport`。
 
 ### 领域核心
 
@@ -25,7 +25,7 @@
 ## 关键数据流
 
 ```text
-physical_key / short_voice
+physical_key / speech_input
         ↓
 InteractionEvent
         ↓
@@ -36,6 +36,10 @@ SessionOrchestrator
         ↓
 DeviceTransport → glasses-agent
 ```
+
+## 无屏交互原则
+
+所有需要表达语义的交互都以语音为主：目的地搜索、候选确认、菜单追问、重复播报、取消、帮助和表情辅助请求。实体键只承担无需看屏幕即可可靠完成的动作：唤起、拍摄确认、重拍、暂停/打断和紧急取消。任何语音输入都先归一化为 `SpeechInput`，再进入会话状态机。
 
 ## 状态机
 

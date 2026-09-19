@@ -17,13 +17,15 @@ subscribe(listener: DeviceEventListener) -> Unsubscribe
 ## NavigationProvider
 
 ```text
+search(query: DestinationQuery) -> DestinationCandidate[]
+confirm(candidateId: string) -> Destination
 start(destination: Destination) -> NavigationStartResult
 stop() -> void
 currentState() -> NavigationState
 subscribe(listener: NavigationEventListener) -> Unsubscribe
 ```
 
-地图适配器只能产生导航事实，不负责播报和 Agent 决策。
+目的地搜索、候选确认和路线导航都由语音驱动；手机屏幕不是必经步骤。地图适配器只能产生导航事实，不负责播报和 Agent 决策。
 
 ## ObservationProvider
 
@@ -42,6 +44,16 @@ repeat(handle: SpeechHandle) -> void
 ```
 
 所有语音必须经过统一队列；模型和地图适配器不能直接播放音频。
+
+## SpeechInput
+
+```text
+start(mode: SpeechInputMode) -> ListeningHandle
+stop(handle: ListeningHandle) -> void
+subscribe(listener: SpeechInputListener) -> Unsubscribe
+```
+
+手机或眼镜麦克风产生的原始语音，必须先转换为带有 `transcript`、`confidence`、`locale` 和 `intent_hint` 的统一输入事件，再交给领域层。目的地搜索、候选确认、菜单追问、重复、取消和表情辅助请求都走这条接口。
 
 ## SessionOrchestrator
 

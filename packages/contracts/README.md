@@ -17,3 +17,4 @@
 - `observation-request.schema.json`：用户确认后的视觉观察请求。
 - `observation-result.schema.json`：场景、入口、菜单和可见表情辅助的结构化结果。
 - `speech-effect.schema.json`：经过优先级仲裁后交给播报层的效果。
+- `speech-input.schema.json`：手机或眼镜麦克风产生的统一语音输入。

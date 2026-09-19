@@ -37,6 +37,7 @@
 - Create: `packages/contracts/schemas/observation-request.schema.json`
 - Create: `packages/contracts/schemas/observation-result.schema.json`
 - Create: `packages/contracts/schemas/speech-effect.schema.json`
+- Create: `packages/contracts/schemas/speech-input.schema.json`
 
 - [x] **Step 1: 定义统一事件信封**
   - 所有事件包含 `schema_version`、`event_id`、`session_id`、`sequence`、`occurred_at`、`source`、`type` 和 `payload`。
