@@ -10,6 +10,7 @@
       "address": "示例路 1 号",
       "category": "restaurant",
       "distance_m": 820,
+      "location": { "lng": 116.406, "lat": 39.912 },
       "provider": "map-simulator"
     }
   ]
