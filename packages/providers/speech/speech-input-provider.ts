@@ -1,5 +1,7 @@
 /** Normalized speech event matching speech-input.schema.json. */
 export interface SpeechInput {
+  /** SpeechInput is identified by input_id rather than a domain event type. */
+  type?: never;
   schema_version: string;
   input_id: string;
   session_id: string;
