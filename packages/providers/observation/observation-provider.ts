@@ -23,6 +23,9 @@ export interface ObservationRequest {
 }
 
 export interface ObservationResult {
+  /** Observation results are identified by request_id and capability_id. */
+  type?: never;
+  source?: never;
   schema_version: string;
   session_id: string;
   request_id: string;
