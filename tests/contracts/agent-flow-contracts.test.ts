@@ -59,6 +59,34 @@ test("skill registry exposes exactly the P0 composable skills", () => {
   );
 });
 
+test("skill manifests reject invalid parameter JSON Schemas", () => {
+  const ajv = new Ajv2020({ strict: true });
+  const validate = ajv.compile(loadJson("packages/contracts/schemas/skill-manifest.schema.json"));
+
+  assert.equal(
+    validate({
+      skill_id: "invalid_parameters",
+      version: "1.0",
+      parameters_schema: { type: "not-a-json-schema-type" },
+      allowed_tools: ["facts.query"],
+      result_kinds: ["facts.query_result"],
+      risk_level: "low",
+    }),
+    false,
+  );
+});
+
+test("skill registry rejects invalid root fields and versions", () => {
+  const ajv = new Ajv2020({ strict: true });
+  ajv.addSchema(loadJson("packages/contracts/schemas/skill-manifest.schema.json"));
+  const validate = ajv.compile(loadJson("packages/contracts/schemas/skill-registry.schema.json"));
+  const registry = loadJson("packages/contracts/skills/registry.json");
+
+  assert.equal(validate(registry), true);
+  assert.equal(validate({ ...registry, schema_version: "invalid" }), false);
+  assert.equal(validate({ ...registry, unexpected_root_field: true }), false);
+});
+
 test("event and session schemas preserve P0 agent context without breaking prior snapshots", () => {
   const ajv = new Ajv2020({ strict: true });
   addFormats(ajv);

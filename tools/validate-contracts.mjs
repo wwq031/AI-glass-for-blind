@@ -93,21 +93,19 @@ await assertReferencedFiles(capabilityRegistry.capabilities, capabilityRegistryP
 ]);
 
 const skillRegistry = await loadJson(skillRegistryPath);
-const skillManifestValidator = ajv.getSchema(
-  "https://leqi-ai-glasses.dev/contracts/skill-manifest.schema.json",
+const skillRegistryValidator = ajv.getSchema(
+  "https://leqi-ai-glasses.dev/contracts/skill-registry.schema.json",
 );
-if (
-  !skillRegistry ||
-  typeof skillRegistry !== "object" ||
-  typeof skillRegistry.schema_version !== "string" ||
-  !Array.isArray(skillRegistry.skills)
-) {
-  throw new Error("Skill registry must contain schema_version and skills.");
-}
-for (const skill of skillRegistry.skills) {
-  if (!skillManifestValidator(skill)) {
-    throw new Error(`Skill ${skill.skill_id ?? "<unknown>"} is invalid:\n${formatErrors(skillManifestValidator.errors)}`);
+const candidateSkills = Array.isArray(skillRegistry?.skills) ? skillRegistry.skills : [];
+for (const skill of candidateSkills) {
+  if (!ajv.validateSchema(skill?.parameters_schema)) {
+    throw new Error(
+      `Skill ${skill?.skill_id ?? "<unknown>"} has an invalid parameters_schema:\n${formatErrors(ajv.errors)}`,
+    );
   }
+}
+if (!skillRegistryValidator(skillRegistry)) {
+  throw new Error(`Skill registry is invalid:\n${formatErrors(skillRegistryValidator.errors)}`);
 }
 const skillIds = skillRegistry.skills.map(({ skill_id }) => skill_id);
 if (JSON.stringify(skillIds) !== JSON.stringify(expectedSkillIds)) {

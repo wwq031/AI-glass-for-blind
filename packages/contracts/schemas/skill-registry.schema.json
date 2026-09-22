@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/skill-registry.schema.json",
+  "title": "Composable agent skill registry",
+  "type": "object",
+  "required": ["schema_version", "skills"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "skills": {
+      "type": "array",
+      "items": { "$ref": "skill-manifest.schema.json" }
+    }
+  },
+  "additionalProperties": false
+}

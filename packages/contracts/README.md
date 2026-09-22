@@ -32,6 +32,7 @@
 - `agent-plan.schema.json`：LLM 为当前 Event 生成的结构化下一步计划；行动只可为逻辑 Tool 调用、播报、等待或完成。
 - `effect.schema.json`：离开 Agent 前的统一 Effect 信封。
 - `skill-manifest.schema.json`：可组合 Skill 的参数、允许 Tool、结果类别与风险策略声明。
+- `skill-registry.schema.json`：Skill 注册表的根结构及其清单项约束。
 
 ## Agent 主流程
 
