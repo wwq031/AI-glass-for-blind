@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "dev": "node apps/phone-companion/src/navigation/demo.ts",
+    "test": "node --test tests/**/*.test.ts",
     "typecheck": "tsc --noEmit",
     "validate:contracts": "node tools/validate-contracts.mjs"
   },
