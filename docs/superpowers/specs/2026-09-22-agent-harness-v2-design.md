@@ -3,372 +3,392 @@
 状态：待评审
 日期：2026-09-22
 
-## 1. 核心结论
+## 1. 设计结论
 
-本项目的 Agent 是一个**由 LLM 主导任务理解和规划、由 Harness 管理执行边界、由 Provider 提供现实世界事实、由策略层守住高风险边界**的助盲任务运行时。
+乐奇 AI 眼镜的 Agent 是一个以 LLM 为认知和规划中心的任务运行时。它负责理解用户目标、结合当前上下文选择或组合 Skill、规划下一步、持续吸收工具结果，并以自然语言完成交互。
 
-它不是：
+Harness 不替代 LLM 做业务规划。Harness 的作用是提供会话状态、统一执行入口、资源与授权检查、结果记录和恢复能力。
 
-- 只会提出候选意见的固定状态机；
-- 每个地点或每个用户目标都预设一条流程；
-- 可以直接操作眼镜硬件的聊天模型；
-- 把普通视觉描述当作安全结论的万能助手。
+系统的唯一主数据流是：
 
-它是：
+~~~text
+Event → Plan → Result → Effect
+~~~
 
-```text
-用户目标 / 系统事件
-  → LLM 理解和任务规划
-  → Harness 验证计划的最小约束
-  → ToolGateway 执行逻辑能力
-  → Provider 返回结构化事实或效果
-  → LLM 根据结果继续规划或表达
-  → 高风险策略对最终建议进行裁决
-```
+其中：
 
-LLM 可以组合已经注册的能力，并在运行时生成一次性的参数化任务计划；它不能凭空创造能力、事实、安全规则或底层设备命令。
+- Event 是进入 Agent 的外部变化；
+- Plan 是 LLM 为当前目标生成的下一步行动计划；
+- Result 是 Tool 或 Provider 执行计划后返回的事实与状态；
+- Effect 是系统最终对用户、设备或导航产生的外部效果。
 
-## 2. 信任模型
+SessionState、PolicyDecision、资源锁和审计记录都是 Harness 内部对象，不与四种主对象混称。
 
-不能笼统地说“信任”或“不信任”LLM，必须按输出类型确定权威来源。
+## 2. 四种主对象
 
-| 输出类型 | 主要来源 | LLM 权限 |
-|---|---|---|
-| 用户意图 | 语音输入和会话上下文 | 理解、补全、澄清 |
-| 任务计划 | LLM 规划 | 生成，经过 Schema 和状态校验 |
-| 物理世界事实 | 摄像头、陀螺仪、定位、地图、OCR/VLM Provider | 解释和引用，不能伪造 |
-| 普通描述 | Provider 事实 + LLM | 可以总结和自然语言表达 |
-| 高风险建议 | 事实 + 领域策略 | LLM 可解释，不能单独裁决 |
-| 设备副作用 | ToolGateway / DeviceTransport | 不能直接执行底层命令 |
+### 2.1 Event：进入 Agent 的输入
 
-因此 LLM 不是被禁止做决策，而是它的决策必须落在正确的权威边界内：
+所有外部变化先归一化为 Event，包括：
 
-```text
-LLM 决定“要完成什么任务、下一步需要什么能力”
-Provider 决定“现实世界检测到了什么”
-Policy 决定“高风险事实能否形成安全建议”
-Gateway 决定“动作是否可以真正执行”
-```
+~~~text
+UserEvent       语音、按键、取消、重播、确认
+SystemEvent     计时器、会话恢复、设备断开
+NavigationEvent 路线、转向、接近路口、到达
+MotionEvent     朝向、姿态、行走状态变化
+ProviderEvent   视觉、OCR、地图、语音识别、网络任务的完成或失败
+~~~
 
-## 3. 四类运行时对象
+每个 Event 需要有稳定的：
 
-### 3.1 Domain Skill
+~~~text
+event_id、session_id、sequence、source、occurred_at、type、payload、confidence
+~~~
 
-Domain Skill 是一个可注册、可发现、可组合的领域能力。它不是针对某个地点的完整流程，而是一个可复用的任务能力。
+原始设备协议、原始图像和原始传感器数据不得直接进入 LLM 上下文；它们先由边缘适配器归一化为 Event 或 Provider Fact。
 
-```text
-通用 Skill：navigate_to、inspect_scene、read_text、find_object、follow_up
-特化 Skill：crossing_advisory、obstacle_warning、entrance_finding、menu_structuring
-```
+### 2.2 Plan：LLM 的行动计划
 
-Skill 声明：
+LLM 每次处理 Event 后，生成一个结构化 AgentPlan。它可以包含：
 
-- 目标和输入参数；
-- 前置条件和适用事件；
-- 结果 Schema；
-- 需要的逻辑 Tool；
-- 资源、延迟和并发要求；
-- 风险等级和必须经过的策略；
-- 失败、重试和澄清方式。
+~~~text
+目标更新
+选择或组合的 Skill
+逻辑 ToolCall
+需要用户澄清的问题
+对当前 Result 的解释
+建议的语音回复
+等待、结束、暂停或恢复动作
+~~~
 
-Skill 不绑定某一个本地模型、云端模型或硬件实现。
+示例：
 
-### 3.2 参数化任务计划
-
-用户目标在运行时转换成 `TaskPlan`，而不是为每个目标注册新能力：
-
-```json
+~~~json
 {
   "goal": "help_user_reach_destination",
-  "steps": [
-    { "skill": "navigate_to", "arguments": { "target": "地铁站" } },
-    { "on_event": "navigation.approaching_intersection", "skill": "crossing_advisory" },
-    { "on_arrival": { "skill": "find_object", "arguments": { "target": "入口" } } }
-  ]
+  "actions": [
+    {
+      "skill": "navigate_to",
+      "arguments": { "target": "人民医院" }
+    },
+    {
+      "wait_for": "navigation.approaching_intersection",
+      "then": "crossing_advisory"
+    }
+  ],
+  "response_draft": "正在为你查找人民医院。"
 }
-```
+~~~
 
-这是一次性的运行时计划，不会被永久注册成“地铁站流程”。
+Plan 是 LLM 的输出，不是设备指令，也不是已经发生的事实。它可以被拒绝、要求补参或等待下一 Event。
 
-LLM 可以生成或调整这个计划，但必须经过 `PlanValidator` 和 `PolicyGuard`。计划只能引用已注册 Skill 和逻辑 Tool，必须有步骤上限、截止时间、资源声明和终止条件。
+### 2.3 Result：执行后的反馈
 
-### 3.3 Provider Fact
+Result 是 Tool、Provider 或策略执行后的反馈，包含成功、部分成功、事实、错误与可恢复信息。
 
-Provider 是现实世界事实或设备效果的来源：
+~~~text
+DestinationCandidates
+NavigationState
+ObservationResult
+TextReadingResult
+ToolError
+PlanRejection
+~~~
 
-```text
-NavigationProvider   路线、距离、方向、接近路口事件
-ObservationProvider  视觉观察和结构化事实
-MotionProvider       姿态、转向、行走和运动事件
-SpeechProvider       语音输入和输出
-DeviceTransport      眼镜连接、按键、摄像请求和设备反馈
-```
+Result 必须携带来源、时间、置信度、有效期和必要的上下文。Harness 会将 Result 包装为下一个 ProviderEvent 或 SystemEvent 后重新交给 LLM。
 
-事实必须带来源、时间、置信度、有效期和方向/上下文信息。LLM 可以解释事实，但不能把自身猜测写成 Provider Fact。
+LLM 可以解释 Result、据此修改 Plan 或对用户作答；LLM 不能把自己的猜测写回为 Provider 产生的事实。PolicyDecision 只在 Harness 内部使用；若拒绝计划或动作，Harness 把可解释的原因包装为 PlanRejection 或 ToolError。
 
-### 3.4 Effect
+### 2.4 Effect：离开 Agent 的输出
 
-Effect 是经过策略和执行入口批准后的外部效果：
+执行通过后的外部输出统一为 Effect：
 
-```text
-SpeechEffect
-DeviceCommand
-NavigationEffect
-ObservationRequest
-SessionEffect
-```
+~~~text
+SpeechEffect        播报、确认问题、进度提示
+HapticEffect        震动或提示音
+DeviceCommand       已批准的拍摄、音频播放等设备指令
+NavigationEffect    启动、停止或恢复导航
+SessionEffect       结束、暂停、保存或恢复会话
+~~~
 
-LLM 生成的是计划或逻辑 ToolCall，不是未经检查的 Effect。
+Effect 必须经过执行器实际送达；实际送达或失败会再次成为新的 Event。
 
-## 4. 完整 Agent 生命周期
+## 3. 运行时角色和权威边界
 
-### 4.1 待机和唤起
+~~~text
+LLM Agent
+  理解目标、组合 Skill、生成 Plan、解释 Result、主持对话
 
-唤起来源包括：
+Agent Harness
+  维护 SessionState、构造上下文、调度 Plan、记录和恢复
 
-- 实体按键；
-- 唤醒词或语音输入；
-- 当前任务的用户回答；
-- 导航、姿态、连接或设备事件。
+Skill Registry
+  描述可组合的任务能力、参数、Tool 需求和适用条件
 
-唤起阶段只做本地快速处理：取消、重播、打断、接受回答、恢复会话。明显的固定命令不得为了路由再额外调用一次 LLM。
+ToolGateway
+  校验逻辑 ToolCall，形成可执行请求
 
-### 4.2 事件标准化
+ProviderRouter
+  选择本地、云端、MCP 适配器或测试替身
 
-所有来源进入统一事件流：
+Provider / DeviceTransport
+  提供现实世界事实，或实际执行设备、地图和模型操作
 
-```text
-user.speech_final
-button.short_press
-button.long_press
-navigation.started
+Policy
+  对授权、资源和高风险建议进行裁决
+~~~
+
+权威不是“是否相信 LLM”的二元问题：
+
+| 问题 | 主导者 |
+|---|---|
+| 用户想完成什么 | LLM，根据用户输入和上下文理解 |
+| 任务应如何组合 | LLM，在已注册 Skill 中规划 |
+| 现实中发生了什么 | Provider 和设备事件 |
+| 当前动作能否执行 | ToolGateway、授权和资源规则 |
+| 高风险事实能否形成安全建议 | 对应领域 Policy |
+| 如何向用户说明 | LLM，基于 Result 和允许公开的策略原因 |
+
+Harness 不应把普通业务流程重写成硬编码状态分支；它只维护执行正确性。
+
+## 4. Skill 与动态组合
+
+### 4.1 Skill 是可调用任务能力
+
+每个 Skill 提供给 LLM 的是能力描述，而不是一条强制流程。Skill 至少声明：
+
+~~~text
+skill_id
+目标和参数 Schema
+可使用的逻辑 Tool
+适用事件和前置条件
+期望 Result Schema
+资源与延迟要求
+高风险时需要的 Policy
+失败后的可选处理方式
+~~~
+
+### 4.2 通用 Skill 覆盖长尾
+
+~~~text
+navigate_to       前往任意目标
+inspect_scene     观察和描述当前场景
+read_text         读取当前文字
+find_target       寻找指定物体、入口或标志
+follow_up         利用当前会话结果回答追问、重播或纠正
+~~~
+
+地点、对象、文字和用户目标均是运行时参数，不需要为医院、餐馆、商场或学校分别建立永久 Skill。
+
+### 4.3 特化 Skill 守住高风险或高结构任务
+
+~~~text
+crossing_advisory  路口和信号灯辅助
+obstacle_advisory  行走障碍辅助
+menu_structuring   菜单等结构化文本整理
+~~~
+
+特化不意味着固定一条完整用户旅程；它只意味着该类任务需要特定事实、置信度规则或领域 Policy。
+
+### 4.4 LLM 组合的边界
+
+LLM 可以在一次 Plan 中组合通用 Skill 和特化 Skill，例如：
+
+~~~text
+navigate_to(target=医院)
+  + 到达后 find_target(target=入口)
+  + 用户请求时 read_text(mode=sign_or_form)
+~~~
+
+组合是一次性的运行时任务计划，不会被写成“医院流程”。对于低风险任务，LLM 可以灵活组合已注册 Skill；对于路口、障碍物等高风险任务，LLM 只能请求对应特化 Skill，不能自行替代其事实要求和 Policy。
+
+## 5. 完整生命周期
+
+### 5.1 唤起
+
+实体按键、语音、用户回答或系统事件产生 Event。固定的取消、重播、暂停和紧急打断走本地快速处理，不为了“路由”额外增加模型回合。
+
+### 5.2 上下文构造
+
+Harness 为 LLM 构造当前 turn 的上下文：
+
+~~~text
+当前 Event
+当前目标与未完成 Plan
+最近 Result 和事实有效期
+导航、位置、朝向和设备状态
+用户授权、隐私范围和资源占用
+可用 Skill、Tool 和 Provider 健康状态
+最近播报和等待用户回答的问题
+~~~
+
+### 5.3 LLM 规划
+
+LLM 根据 Event 和上下文输出 AgentPlan。它可以直接回复，也可以发出一个或多个逻辑 ToolCall，也可以等待后续 Event。普通输入只需一次“理解 + 规划”模型回合，不拆成独立意图路由回合和规划回合。
+
+### 5.4 Plan 验证和执行
+
+Harness 对 Plan 做最小检查：
+
+- Skill 和 Tool 是否存在；
+- 参数是否符合 Schema；
+- 是否具备用户授权；
+- 是否满足资源、并发、截止时间和幂等要求；
+- 高风险任务是否进入指定 Policy。
+
+通过后，TaskRunner 调用 ToolGateway。拒绝或缺参时，Harness 以结构化 Result 返回给 LLM，由 LLM 修正 Plan 或向用户澄清。
+
+### 5.5 Result 回流
+
+Tool/Provider 的同步返回、异步回调、设备确认、模型失败都成为 Result，再包装为下一 Event。LLM 依据 Result 继续任务、重试、追问、切换 Skill 或生成最终回复。
+
+### 5.6 输出和收尾
+
+LLM 产生的回复草稿与批准后的动作编译为 Effect。会话在完成、取消、超时、设备断开或用户求助时收尾；Harness 释放资源、保存状态并记录可恢复点。
+
+## 6. 导航、路口和主动观察
+
+navigate_to 的职责是启动并维持导航，不直接拍摄，也不直接判断通行。
+
+导航 Provider 返回：
+
+~~~text
 navigation.approaching_intersection
-navigation.arrived
-motion.heading_changed
-observation.completed
-device.disconnected
-timer.expired
-```
+  intersection_id
+  distance_m
+  travel_heading
+  crossing_context
+  route_segment
+  occurred_at
+~~~
 
-事件至少包含：
+该 Event 会建立一个“路口检查”任务上下文，唤起 crossing_advisory。LLM 在这个上下文中规划下一步，且只能调用符合该 Skill 要求的逻辑观察能力。
 
-```text
-event_id、source、session_id、sequence、occurred_at、payload、confidence
-```
-
-陀螺仪、姿态和行走状态优先以本地 `MotionEvent` 进入事件流，不设计为让 LLM 反复读取原始传感器的 Tool。
-
-### 4.3 会话和上下文
-
-Agent 为每轮构造上下文快照：
-
-- 当前任务目标和阶段；
-- 已确认的事实及有效期；
-- 未完成的计划步骤；
-- 用户授权和隐私策略；
-- 当前导航、方向和位置状态；
-- 可用 Skill、Tool 和 Provider 健康状态；
-- 最近播报、用户追问和错误；
-- 摄像头、麦克风、播报等资源占用。
-
-LLM 看到的是经过筛选的结构化上下文，而不是任意原始设备数据。
-
-### 4.4 LLM 规划
-
-对于新目标或模糊输入，LLM 作为主要任务规划器：
-
-1. 识别目标、对象、地点、条件和缺失参数；
-2. 从 Skill Registry 选择和组合通用/特化能力；
-3. 生成参数化 `TaskPlan`；
-4. 决定是否需要澄清、观察、等待或继续；
-5. 根据结构化结果决定下一步计划或播报。
-
-LLM 不需要先经过一个独立的“意图路由模型”再调用一次 LLM；普通请求可以一次完成理解和初步计划。
-
-### 4.5 计划校验和最小约束
-
-`PlanValidator` 不负责把所有场景硬编码成状态分支，而只检查计划是否满足基础不变量：
-
-- Skill 和 Tool 是否已注册；
-- 输入参数是否符合 Schema；
-- 当前状态是否满足前置条件；
-- 是否存在越权的原始设备调用；
-- 是否缺少用户授权；
-- 是否违反资源锁、步骤数或截止时间；
-- 高风险结果是否经过要求的领域策略。
-
-校验通过后，LLM 生成的计划可以由 `TaskRunner` 执行；校验失败时返回结构化错误，允许 LLM 修正或向用户澄清。
-
-### 4.6 导航事件与红绿灯能力
-
-导航是事件来源，不能让 LLM凭空决定“现在应该拍摄”。标准路径为：
-
-```text
-用户请求 navigate_to
-  → NavigationProvider 启动路线
-  → NavigationProvider 返回 navigation.approaching_intersection
-  → TriggerEngine 创建 crossing_advisory 任务上下文
-  → LLM 可补充任务表达或选择已允许的观察步骤
-  → PolicyGuard 检查授权、方向、时效和资源
+~~~text
+NavigationEvent
+  → crossing_advisory context
+  → LLM Plan
+  → consent/resource check
   → observation.request
-  → ObservationProvider 返回交通事实
-  → CrossingAdvisoryPolicy 生成 wait / recheck / proceed_with_caution / cannot_determine
+  → ObservationResult
+  → CrossingPolicy
   → SpeechEffect
-```
+~~~
 
-`navigate_to` 本身不直接拍摄，也不直接输出是否可以通行的结论。`navigation.approaching_intersection` 至少携带：
+用户主动问“前面能不能过”时，LLM 也可以请求 crossing_advisory；若缺少位置、方向或路口上下文，必须向用户澄清、等待导航 Event，或输出保守结果。普通 inspect_scene 不能代替路口安全建议。
 
-```text
-intersection_id、distance_m、travel_heading、crossing_context、route_segment、occurred_at
-```
+主动观察不由 LLM 随意发起。是否可以拍摄由会话授权、当前任务、冷却时间、资源和隐私策略共同决定。P0 支持按次确认，也支持显式的会话预授权；两者都能随时取消。
 
-用户主动问“前面能不能过”时，Agent 仍然先读取当前导航上下文；缺少必要上下文时，必须补齐、追问或保守拒绝，不能退回普通场景描述。
+## 7. Tool、Provider 与本地/云端
 
-### 4.7 执行和结果反馈
+Agent 只调用逻辑 Tool，例如：
 
-执行统一经过：
+~~~text
+navigation.search_destination
+navigation.start
+observation.request
+facts.query
+speech.ask_user
+session.cancel
+~~~
 
-```text
-TaskRunner
-  → ToolGateway
-  → ProviderRouter
-  → LocalProvider / RemoteProvider / RecordedProvider / McpProviderAdapter
-  → ResultNormalizer
-  → EventLog
-```
+ToolGateway 之后才进入 ProviderRouter：
 
-结果统一为：
-
-```text
-succeeded
-partial
-needs_retake
-needs_confirmation
-cannot_determine
-failed
-```
-
-LLM 可以基于结构化结果继续规划、总结或追问，但不可以修改事实来源和置信度。
-
-### 4.8 通用兜底和安全处置
-
-能力匹配顺序不是“所有场景都特化”，而是：
-
-```text
-特化 Skill 适用 → 使用特化 Skill
-没有特化 Skill 且低风险 → 使用通用 Skill
-普通结果不清楚 → 重试、调整方向或追问
-高风险事实不清楚 → 保守处置，不输出安全保证
-```
-
-例如：
-
-- “看看那边有什么”可以使用 `inspect_scene`；
-- “读一下这张纸”可以使用 `read_text`；
-- “前面能不能过马路”不能用普通场景描述替代 `crossing_advisory`。
-
-保守处置不是系统崩溃，而是合法结果：
-
-```text
-请先停下，我无法确认当前是否安全。
-```
-
-必要时可以重试、请求身边的人确认或进入预设人工协助流程。
-
-### 4.9 追问、中断和收尾
-
-Agent 支持：
-
-- 取消当前任务；
-- 中断播报；
-- 重播上次结果；
-- 回答待确认问题；
-- 继续当前计划；
-- 结束会话。
-
-收尾原因统一为：
-
-```text
-completed、cancelled、timeout、failed、device_disconnected、user_requested_help
-```
-
-收尾时释放设备资源、停止主动观察、保存计划和事实摘要，并记录未完成步骤。恢复时必须先对账最后一个已确认事件，不能把未知状态当作成功。
-
-## 5. Tool、Provider 和本地/云端
-
-### 5.1 统一逻辑调用
-
-Agent 只调用逻辑 Tool，不知道实际执行位置：
-
-```text
-CoreAgent / TaskRunner
-  → ToolGateway
+~~~text
+ToolGateway
   → ProviderRouter
       ├─ LocalProvider
       ├─ RemoteProvider
-      ├─ RecordedProvider
-      └─ McpProviderAdapter
-```
+      ├─ McpProviderAdapter
+      └─ RecordedProvider
+~~~
 
-MCP 只是远程 Provider 的一种协议适配，不是 Agent 核心协议。模型不直接看到原始蓝牙、CXR、摄像头或陀螺仪命令。
+本地同步调用和云端异步调用统一为 Result 生命周期：
 
-### 5.2 Provider 选择
+~~~text
+requested → running → partial → succeeded
+                              ├─ needs_retake
+                              ├─ cannot_determine
+                              └─ failed
+~~~
 
-ProviderRouter 根据以下因素选择实现：
+调用上下文至少包括：
 
-- 隐私策略；
-- 允许的网络位置；
-- 延迟截止时间；
-- 本地模型健康状态；
-- 电量和设备资源；
-- 云端可用性；
-- 失败回退策略。
-
-本地同步和云端异步统一为：
-
-```text
-requested → running → partial → succeeded / needs_retake / cannot_determine / failed
-```
-
-调用上下文至少包含：
-
-```text
+~~~text
 session_id、request_id、idempotency_key、deadline、consent、privacy_policy、priority
-```
+~~~
 
-结果至少包含：
+Provider Result 至少包括：
 
-```text
+~~~text
 status、provider_id、execution_location、provider_version、created_at、expires_at、retryable
-```
+~~~
 
-### 5.3 不同设备能力的调用形态
+设备能力的形态不同：
 
-```text
-摄像头：受授权的 observation.request
-语音：SpeechInput / SpeechEffect
-陀螺仪：本地 MotionEvent 事件流
+~~~text
+摄像头：经授权的 observation.request
+语音：SpeechInput Event 与 SpeechEffect
+陀螺仪：本地 MotionEvent 流
 蓝牙：本地 DeviceTransport 传输层
 地图：NavigationProvider
-```
+~~~
 
-这些能力在启动时全局注册并维护健康状态，但敏感采集和模型推理只能由任务计划和策略按需启动。
+MCP 可以作为某个远程 Provider 的传输适配，不作为 Agent、眼镜或手机之间的核心协议。
 
-## 6. P0 目录和实现边界
+## 8. 高风险策略
 
-建议核心模块为：
+高风险策略只处理明确需要领域裁决的问题，不接管 LLM 的一般规划。
 
-```text
+例如 crossing_advisory 的输入必须是带来源和有效期的交通事实；其输出只能是：
+
+~~~text
+wait
+recheck
+proceed_with_caution
+cannot_determine
+~~~
+
+LLM 可以把结果表达为适合用户理解的语言，但不能把 unknown、过期、方向不匹配或低置信度事实改写成“可以安全通行”。
+
+低风险通用 Skill 的不确定结果可由 LLM 决定重试、换角度、追问或直接说明看不清。高风险不确定结果进入保守处置，并在需要时建议用户停下、等待确认或寻求人工协助。
+
+## 9. P0 验收
+
+P0 在模拟器中验证以下闭环：
+
+1. 用户按键或语音唤起，输入任意目的地；
+2. LLM 生成参数化导航 Plan，不依赖手机屏幕；
+3. 导航 Event 唤起路口检查上下文；
+4. LLM 组合已注册 Skill，Harness 只做约束检查；
+5. 观察 Result 支持成功、重拍、超时、低置信度和无法确认；
+6. 到达任何目的地后，用户可按需求寻找入口、目标物或读取文字；
+7. 菜单是 read_text 的结构化模式，不是餐馆固定流程；
+8. 用户可追问、重播、取消、打断和继续；
+9. 本地、远程替身和回放 Provider 采用同一 Tool/Result 合同；
+10. Event、Plan、Result、Effect、授权判定和资源状态均可回放。
+
+P0 不要求真实 CXR、真实 Android 后台服务、真实云模型或连续自主监测，但必须保留对应接缝。
+
+## 10. 合同与目录调整
+
+~~~text
+packages/contracts/agent/
+├─ event.schema.json
+├─ agent-plan.schema.json
+├─ tool-result.schema.json
+├─ effect.schema.json
+├─ session-state.schema.json
+└─ skill-manifest.schema.json
+
 packages/domain/agent/
 ├─ agent-harness.ts
 ├─ session-orchestrator.ts
 ├─ context-builder.ts
-├─ core-agent.ts
+├─ llm-agent.ts
 ├─ plan-validator.ts
 ├─ task-runner.ts
 ├─ resource-manager.ts
 ├─ policy-guard.ts
-├─ decision-engine.ts
 ├─ effect-compiler.ts
 └─ replay-runtime.ts
 
@@ -376,8 +396,7 @@ packages/domain/skills/
 ├─ generic/
 ├─ navigation/
 ├─ crossing-advisory/
-├─ obstacle-warning/
-├─ entrance-finding/
+├─ obstacle-advisory/
 └─ text-reading/
 
 packages/providers/
@@ -393,33 +412,6 @@ packages/providers/
 ├─ navigation/
 ├─ observation/
 └─ storage/
-```
+~~~
 
-场景样例“去餐厅”只放在 `tests/scenarios`，作为参数化任务计划的回放案例，不建立 `restaurant_visit` 这种针对地点的永久能力。
-
-## 7. P0 验收
-
-模拟器必须验证：
-
-1. 用户唤起后，LLM 能从语音提取目的地和附加需求；
-2. Agent 能生成 `navigate_to` 参数化任务计划；
-3. 导航 Provider 产生接近路口事件后，自动创建路口能力上下文；
-4. LLM/TaskRunner 能在已注册能力中组合合法步骤，但不能绕过策略；
-5. 路口观察成功、低置信度、过期和无法确认均有正确结果；
-6. 到达任意目标后可以根据用户需求寻找入口、目标物或文字；
-7. 通用观察和文字读取覆盖未特化的低风险请求；
-8. 菜单只是文字读取的结构化模式之一，不绑定餐厅流程；
-9. 用户可以追问、重播、取消、打断和继续；
-10. 本地、远程替身和回放 Provider 使用同一合同；
-11. 所有事件、计划、Provider 事实、策略判定、Tool 结果和 Effect 可回放。
-
-P0 不要求真实 CXR、真实 Android 后台服务、真实云模型或所有主动监测策略，但必须保留这些适配位置。
-
-## 8. 明确不做的事情
-
-- 不为每个地点、职业、建筑或用户目标创建永久 Skill；
-- 不让 LLM 直接读写原始陀螺仪、蓝牙或 CXR 协议；
-- 不把导航启动动作和视觉观察动作强行绑定；
-- 不让普通视觉描述替代红绿灯或障碍物安全策略；
-- 不为每一个逻辑判断增加额外的 LLM 回合；
-- 不把 MCP 当作设备侧核心通信协议。
+“去餐馆”只保留为 tests/scenarios 的回放样例，而不是永久组合 Skill。
