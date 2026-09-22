@@ -1,4 +1,6 @@
-# Agent Harness P0 设计规格
+# Agent Harness P0 设计规格（已被 v2 取代）
+
+> 本文件保留作为早期讨论记录。当前设计以 [`2026-09-22-agent-harness-v2-design.md`](./2026-09-22-agent-harness-v2-design.md) 为准；实现计划不得引用本文件中与 v2 不一致的限制性表述。
 
 状态：待评审
 日期：2026-09-22
