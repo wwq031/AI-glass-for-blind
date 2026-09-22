@@ -18,6 +18,7 @@ node_modules/
 dist/
 coverage/
 .turbo/
+.worktrees/
 
 # Device and proprietary evidence
 *.apk
