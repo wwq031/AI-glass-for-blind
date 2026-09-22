@@ -2,6 +2,7 @@
   "name": "ai-glass-for-blind",
   "version": "0.1.0",
   "private": true,
+  "packageManager": "pnpm@12.4.2",
   "description": "乐奇 AI 眼镜 - 助盲导航最小纵向切片(手机端 × 高德地图)",
   "type": "module",
   "scripts": {
