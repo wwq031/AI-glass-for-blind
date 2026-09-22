@@ -8,7 +8,7 @@
     "facts": {
       "type": "array",
       "items": {
-        "$ref": "../schemas/fact.schema.json"
+        "$ref": "../fact.schema.json"
       }
     }
   },

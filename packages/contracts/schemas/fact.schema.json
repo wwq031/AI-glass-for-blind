@@ -6,7 +6,7 @@
   "type": "object",
   "required": ["name", "value", "confidence"],
   "properties": {
-    "name": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+    "name": { "type": "string", "pattern": "^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)+$" },
     "value": {},
     "confidence": { "enum": ["high", "medium", "low", "unknown"] },
     "valid_until": { "type": "string", "format": "date-time" },
