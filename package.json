@@ -6,10 +6,13 @@
   "type": "module",
   "scripts": {
     "dev": "node apps/phone-companion/src/navigation/demo.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "validate:contracts": "node tools/validate-contracts.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "ajv": "^8.20.0",
+    "ajv-formats": "^3.0.1",
     "typescript": "^5.8.0"
   }
 }
