@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://leqi-ai-glasses.dev/contracts/agent-plan.schema.json",
+  "title": "LLM agent plan",
+  "type": "object",
+  "required": ["schema_version", "plan_id", "session_id", "event_id", "goal", "actions", "created_at"],
+  "properties": {
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+$" },
+    "plan_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "event_id": { "type": "string", "minLength": 1 },
+    "goal": { "type": "string", "minLength": 1 },
+    "actions": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/action" }
+    },
+    "created_at": { "type": "string", "format": "date-time" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "action": {
+      "oneOf": [
+        { "$ref": "#/$defs/toolCall" },
+        { "$ref": "#/$defs/speak" },
+        { "$ref": "#/$defs/wait" },
+        { "$ref": "#/$defs/complete" }
+      ]
+    },
+    "toolCall": {
+      "type": "object",
+      "required": ["kind", "skill_id", "tool_id", "arguments"],
+      "properties": {
+        "kind": { "const": "tool_call" },
+        "skill_id": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" },
+        "tool_id": { "type": "string", "pattern": "^[a-z][a-z0-9]*(\\.[a-z0-9_-]+)+$" },
+        "arguments": { "type": "object" }
+      },
+      "additionalProperties": false
+    },
+    "speak": {
+      "type": "object",
+      "required": ["kind", "text", "priority"],
+      "properties": {
+        "kind": { "const": "speak" },
+        "text": { "type": "string", "minLength": 1 },
+        "priority": { "enum": ["critical", "high", "normal", "detail"] }
+      },
+      "additionalProperties": false
+    },
+    "wait": {
+      "type": "object",
+      "required": ["kind", "event_types"],
+      "properties": {
+        "kind": { "const": "wait" },
+        "event_types": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        }
+      },
+      "additionalProperties": false
+    },
+    "complete": {
+      "type": "object",
+      "required": ["kind", "reason"],
+      "properties": {
+        "kind": { "const": "complete" },
+        "reason": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

@@ -29,6 +29,17 @@
 - `capability-registry.schema.json`：能力注册表的结构。
 - `tool-definition.schema.json` / `tool-call.schema.json` / `tool-result.schema.json`：Tool Loop 的定义、调用和结果。
 - `tool-registry.schema.json`：Tool 注册表的结构。
+- `agent-plan.schema.json`：LLM 为当前 Event 生成的结构化下一步计划；行动只可为逻辑 Tool 调用、播报、等待或完成。
+- `effect.schema.json`：离开 Agent 前的统一 Effect 信封。
+- `skill-manifest.schema.json`：可组合 Skill 的参数、允许 Tool、结果类别与风险策略声明。
+
+## Agent 主流程
+
+Event enters Agent; AgentPlan is produced by LLM; ToolResult returns as a later Event; Effect leaves Agent after validation.
+
+`skills/registry.json` 是 P0 可组合 Skill 的完整注册表。它声明通用导航、观察、读取、查找和追问能力，以及路口、障碍物和菜单等需要结构化结果或领域策略的能力。路口 Skill 只声明 `observation.request` 这一观察 Tool，并要求 `crossing-advisory` 策略；它不能把原始设备命令写进 AgentPlan。
+
+`session-snapshot.schema.json` 在既有恢复字段外，可选保存当前目标、活跃计划、待回答问题、事实和活跃 Skill。旧快照不需要这些字段，仍可通过验证。
 
 `capabilities/registry.json` 是观察能力的注册表。新增普通观察能力时优先新增注册项和事实 Schema，不修改会话核心合同。
 
