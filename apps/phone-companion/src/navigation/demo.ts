@@ -15,6 +15,11 @@ import { join } from "node:path";
 import { AmapNavigationProvider } from "./map-adapter.ts";
 import { FakeNavigationProvider } from "../../../../packages/testkit/fake-navigation-provider.ts";
 import { FakeLocationProvider } from "../../../../packages/testkit/fake-location-provider.ts";
+import { FakeSpeechInputProvider } from "../../../../packages/testkit/fake-speech-input-provider.ts";
+import type {
+  SpeechInput,
+  SpeechInputProvider,
+} from "../../../../packages/providers/speech/speech-input-provider.ts";
 import type {
   DestinationQuery,
   NavigationProvider,
@@ -43,7 +48,7 @@ function readAmapKey(): string {
 const AMAP_KEY = readAmapKey();
 
 function buildProvider(): NavigationProvider {
-  if (AMAP_KEY) {
+  if (AMAP_KEY && process.env.DEMO_USE_FAKE_NAVIGATION !== "1") {
     console.log(`[配置] 使用真实高德接口（key=${AMAP_KEY.slice(0, 4)}…${AMAP_KEY.slice(-4)}）`);
     return new AmapNavigationProvider({ apiKey: AMAP_KEY });
   }
@@ -51,9 +56,32 @@ function buildProvider(): NavigationProvider {
   return new FakeNavigationProvider();
 }
 
+async function captureDestination(
+  provider: SpeechInputProvider,
+  sessionId: string,
+): Promise<SpeechInput> {
+  let unsubscribe = () => {};
+  const inputPromise = new Promise<SpeechInput>((resolve) => {
+    unsubscribe = provider.subscribe((input) => {
+      if (input.session_id === sessionId && input.is_final) resolve(input);
+    });
+  });
+  const handle = await provider.start(sessionId, "destination");
+  const input = await inputPromise;
+  unsubscribe();
+  await provider.stop(handle);
+  return input;
+}
+
 async function main() {
   const provider = buildProvider();
   const sessionId = "session-demo-001";
+
+  // A phone build can inject real microphone/ASR input through the same seam.
+  const transcript = process.argv.slice(2).join(" ").trim() || "人民公园";
+  const speechProvider = new FakeSpeechInputProvider({ transcript });
+  const speechInput = await captureDestination(speechProvider, sessionId);
+  console.log(`语音输入：${speechInput.transcript}`);
 
   // ── 第 1 步：拿到"我的位置"（定位） ──────────────────────────────
   // 真机上用高德定位 SDK / 系统定位；现在用假定位返回演示坐标。
@@ -65,8 +93,8 @@ async function main() {
     schema_version: "1.0",
     query_id: "query-001",
     session_id: sessionId,
-    transcript: "人民公园",
-    locale: "zh-CN",
+    transcript: speechInput.transcript,
+    locale: speechInput.locale,
     requested_at: new Date().toISOString(),
   };
 
