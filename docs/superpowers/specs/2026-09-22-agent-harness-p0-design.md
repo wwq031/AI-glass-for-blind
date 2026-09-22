@@ -213,6 +213,30 @@ system_alert   系统主动事件
 - “看看那里怎么了”才需要结合上下文或由 LLM 在候选能力中选择；
 - “前面能不能过马路”不能因为没有特化能力就退回普通场景描述。
 
+#### 导航事件驱动的路口能力
+
+`navigate_to` 只负责创建和维持导航任务，不直接拍摄，也不直接判断是否可以过马路。P0 中路口能力的标准触发链是：
+
+```text
+NavigationProvider
+  → navigation.approaching_intersection
+  → TriggerEngine
+  → traffic_signal_advisory
+  → observation.request
+  → CrossingAdvisoryPolicy
+  → SpeechEffect
+```
+
+`navigation.approaching_intersection` 至少应携带：
+
+```text
+intersection_id、distance_m、travel_heading、crossing_context、route_segment、occurred_at
+```
+
+只有导航事件提供了足够的路口上下文，且 `PolicyGuard` 通过授权、方向、时效和资源检查后，才允许申请前方观察。LLM 不能把 `navigate_to` 自由扩展成“直接拍摄并判断通行”。
+
+用户主动说“帮我看看前面能不能过”时，也必须先读取当前导航上下文；缺少路口、方向或位置参数时，应先补齐、追问或保守拒绝，不能退回普通场景描述。
+
 ### 4.5 任务计划
 
 能力路由产生结构化 `TaskPlan`，而不是直接发设备命令：
