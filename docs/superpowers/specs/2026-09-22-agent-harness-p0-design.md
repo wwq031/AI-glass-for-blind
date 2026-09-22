@@ -63,6 +63,8 @@ Domain Skill
 
 Provider 在 Agent 启动时统一注册并维护健康状态，但摄像头采集、OCR/VLM 推理、原始音频上传等高成本或敏感行为只能在会话授权和策略许可后按需执行。
 
+本项目不把 MCP 作为 Agent 核心调用协议。MCP 可以作为远程 Provider 的一种适配协议，但必须隐藏在 `McpProviderAdapter` 后面；Agent 看到的仍然是项目自己的 Tool 和领域结果合同。
+
 ## 3. 总体运行时结构
 
 ```text
@@ -73,7 +75,7 @@ Provider 在 Agent 启动时统一注册并维护健康状态，但摄像头采�
   → FastPathRouter / CoreAgent
   → PolicyGuard / ConsentGate
   → PlanExecutor / ResourceManager
-  → ToolGateway / ProviderGateway
+  → ToolGateway / ProviderRouter / ProviderGateway
   → ResultNormalizer
   → DecisionEngine
   → EffectCompiler
@@ -87,6 +89,49 @@ Provider 在 Agent 启动时统一注册并维护健康状态，但摄像头采�
 3. LLM 只处理自然语言理解、模糊能力匹配、参数补全、结果摘要和追问候选。
 4. LLM 不能直接访问摄像头、地图、设备、网络，也不能修改安全状态。
 5. 每个副作用动作都必须经过 PolicyGuard 和 ToolGateway。
+
+### 3.1 统一调用与部署路由
+
+Agent 只调用逻辑 Tool，不感知执行位置。`ProviderRouter` 根据隐私、延迟、网络、电量、资源占用、Provider 健康状态和产品策略选择实现：
+
+```text
+ToolGateway
+  → ProviderRouter
+      ├─ LocalProvider       手机本地模型或眼镜设备
+      ├─ RemoteProvider      HTTP/WebSocket/云端任务
+      ├─ McpProviderAdapter  远程 MCP 服务的受限适配器
+      └─ RecordedProvider    测试和场景回放
+```
+
+本地同步和云端异步必须归一化为同一任务生命周期：
+
+```text
+requested → running → partial → succeeded
+                              ├─ needs_retake
+                              ├─ cannot_determine
+                              └─ failed
+```
+
+每次调用携带：
+
+```text
+session_id、request_id、idempotency_key、deadline、consent、privacy_policy、priority
+```
+
+每个结果携带：
+
+```text
+status、provider_id、execution_location、provider_version、created_at、expires_at、retryable
+```
+
+`ProviderRouter` 的选择不由 LLM 临时决定。LLM 可以提出逻辑能力请求，但不能指定绕过策略的本地函数、云端 URL、MCP Server 或设备协议。
+
+不同硬件能力采用不同的输入形态：
+
+- 摄像头是受授权的 `observation.request`；
+- 语音是 `SpeechInput` 和 `SpeechEffect`；
+- 蓝牙只是本地 `DeviceTransport`，不暴露给模型；
+- 陀螺仪、姿态和行走状态优先作为本地 `MotionEvent` 事件流进入 `EventNormalizer`，不作为模型按需读取的原始 Tool。
 
 ## 4. Agent 生命周期
 
@@ -234,12 +279,13 @@ ToolGateway 是唯一的执行入口：
 校验 Tool ID 和 Schema
   → 检查授权、状态、幂等键和截止时间
   → ResourceManager 获取资源
+  → ProviderRouter 选择本地/远程/回放 Provider
   → 调用 Provider
   → 归一化 ToolResult / DomainEvent / Fact
   → 写入审计记录
 ```
 
-只读 Tool 可在资源不冲突时并行；副作用 Tool 默认串行。摄像头、麦克风、播报通道等资源必须有显式锁和释放路径。
+只读 Tool 可在资源不冲突时并行；副作用 Tool 默认串行。摄像头、麦克风、播报通道等资源必须有显式锁和释放路径。远程 Provider 的网络重试、异步回调和断线恢复由 Provider Adapter 负责，不泄漏到 Domain Skill。
 
 ### 4.8 结果决策
 
@@ -335,6 +381,7 @@ user_requested_help
 8. 用户重播、取消和打断当前播报；
 9. 设备断开、Provider 超时和会话恢复；
 10. 完整事件、计划、策略判定、Tool 结果和播报可回放。
+11. 同一观察合同分别由 `RecordedProvider`、本地替身和远程异步替身执行时，Agent 行为和领域结果保持一致；回放不访问真实网络或 MCP 服务。
 
 P0 不要求：
 
@@ -383,7 +430,12 @@ packages/domain/skills/
 packages/providers/
 ├─ registry/
 ├─ gateway/
+├─ router/
+├─ local/
+├─ remote/
+├─ mcp-adapter/
 ├─ device/
+├─ motion/
 ├─ speech/
 ├─ navigation/
 ├─ observation/
@@ -392,7 +444,7 @@ packages/providers/
 └─ storage/
 ```
 
-现有 `core-agent-design.md` 中的 `capability_id`、ToolGateway、SafetyGuard 和回放原则继续保留，但需要把“能力注册”明确为 Domain Skill 注册，把 Provider 绑定改为全局 Provider Gateway 的能力需求解析。
+现有 `core-agent-design.md` 中的 `capability_id`、ToolGateway、SafetyGuard 和回放原则继续保留，但需要把“能力注册”明确为 Domain Skill 注册，把 Provider 绑定改为全局 ProviderRouter/ProviderGateway 的能力需求解析。现有 `tool-system.md` 需要补充本地、远程、MCP 适配器和统一调用上下文的说明。
 
 ## 8. 未在本规格中决定的事项
 
