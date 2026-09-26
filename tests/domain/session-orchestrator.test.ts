@@ -129,6 +129,86 @@ test("a pending plan rejection cannot be replaced by a forged payload", async ()
   assert.deepEqual(agent.inputs[1]?.event.payload, { code: "unknown_skill", actionIndex: 0 });
 });
 
+test("cancel, help, and device disconnect preempt pending feedback", async () => {
+  for (const [type, source, expectedStatus] of [
+    ["user.cancel", "user", "cancelled"],
+    ["user.help_requested", "user", "help_requested"],
+    ["device.disconnected", "device", "device_disconnected"],
+  ] as const) {
+    const { core, agent } = orchestrator([plan([{
+      kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {},
+    }])], new RecordedToolGateway([{
+      callId: "r-1", sessionId: "s-1", toolId: "facts.query", status: "succeeded",
+      completedAt: now(), output: {}, facts: [],
+    }]));
+    const first = await core.handle(event());
+    const pending = first.followUpEvents![0]!;
+    const urgent = await core.handle({ ...event("urgent", 2), source, type });
+    assert.equal(urgent.rejection, undefined);
+    assert.equal(urgent.effects[0]?.type, "session");
+    assert.equal(urgent.effects[0]?.payload.status, expectedStatus);
+    assert.equal(core.snapshot("s-1").lastSequence, 2);
+    assert.equal(agent.inputs.length, 1);
+    const oldFeedback = await core.handle({ ...pending, sequence: 3 });
+    assert.equal(oldFeedback.rejection?.code, "invalid_feedback");
+  }
+});
+
+test("a normalized speech cancel hint bypasses pending feedback", async () => {
+  const { core } = orchestrator([plan([{ kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {} }])],
+    new RecordedToolGateway([{ callId: "r", sessionId: "s-1", toolId: "facts.query",
+      status: "succeeded", completedAt: now(), output: {}, facts: [] }]));
+  await core.handle(event());
+  const output = await core.handle({ ...event("speech-cancel", 2), type: "speech.input", payload: { intent_hint: "cancel" } });
+  assert.equal(output.effects[0]?.payload.status, "cancelled");
+});
+
+test("urgent cancel invalidates an in-flight LLM plan before tools or effects", async () => {
+  let resolvePlan!: (value: AgentPlan) => void;
+  const delayedPlan = new Promise<AgentPlan>((resolve) => { resolvePlan = resolve; });
+  const tools = new RecordedToolGateway([]);
+  const core = new SessionOrchestrator({
+    agent: { plan: () => delayedPlan }, tools, skills: createP0SkillRegistry(), now,
+  });
+  const inFlight = core.handle(event());
+  const urgent = await core.handle({ ...event("cancel", 2), type: "user.cancel" });
+  assert.equal(urgent.effects[0]?.payload.status, "cancelled");
+  resolvePlan(plan([{ kind: "speak", text: "过时回答", priority: "normal" }]));
+  const oldOutput = await inFlight;
+  assert.equal(oldOutput.rejection?.code, "interrupted");
+  assert.deepEqual(oldOutput.effects, []);
+  assert.deepEqual(tools.calls, []);
+});
+
+test("urgent help stops remaining calls after an in-flight gateway request", async () => {
+  let resolveTool!: (value: ToolResult) => void;
+  const pendingTool = new Promise<ToolResult>((resolve) => { resolveTool = resolve; });
+  let calls = 0;
+  const core = new SessionOrchestrator({
+    agent: new RecordedLlmAgent([plan([
+      { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {} },
+      { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {} },
+      { kind: "speak", text: "过时结果", priority: "normal" },
+    ])]),
+    tools: { execute: async () => {
+      calls++;
+      return pendingTool;
+    } },
+    skills: createP0SkillRegistry(), now,
+  });
+  const inFlight = core.handle(event());
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.equal(calls, 1);
+  const urgent = await core.handle({ ...event("help", 2), type: "user.help_requested" });
+  assert.equal(urgent.effects[0]?.payload.status, "help_requested");
+  resolveTool({ callId: "r", sessionId: "s-1", toolId: "facts.query", status: "succeeded",
+    completedAt: now(), output: {}, facts: [] });
+  const oldOutput = await inFlight;
+  assert.equal(oldOutput.rejection?.code, "interrupted");
+  assert.equal(calls, 1);
+  assert.deepEqual(oldOutput.effects, []);
+});
+
 test("malformed model Plan is a structured rejection without gateway side effects", async () => {
   const malformed = { ...plan([]), actions: null } as unknown as AgentPlan;
   const { core, tools } = orchestrator([malformed]);

@@ -15,12 +15,13 @@ export class TaskRunner {
     this.options = options;
   }
 
-  async run(plan: AgentPlan, permissions: ExecutionPermissions): Promise<TaskRunOutput> {
+  async run(plan: AgentPlan, permissions: ExecutionPermissions, shouldContinue: () => boolean = () => true): Promise<TaskRunOutput> {
     const effects: Effect[] = [];
     const results: ToolResult[] = [];
     let awaitingResult = false;
     const createdAt = () => (this.options.now ?? (() => new Date().toISOString()))();
     for (const [actionIndex, action] of plan.actions.entries()) {
+      if (!shouldContinue()) break;
       if (action.kind === "tool_call") {
         const observation = action.toolId === "observation.request";
         if (observation && permissions.observationConsent !== "explicit" && permissions.observationConsent !== "preauthorized") {
