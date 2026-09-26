@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isCapabilityCompatibleWithSkill, validatePlan, type ExecutionPermissions } from "../../packages/domain/agent/plan-validator.ts";
+import { isCapabilityCompatibleWithSkill, isPlanToolExposureAllowed, validatePlan, type ExecutionPermissions } from "../../packages/domain/agent/plan-validator.ts";
 import { SkillRegistry, type AgentPlan, type PlanAction } from "../../packages/domain/agent/types.ts";
 import { createP0SkillRegistry } from "../../packages/domain/skills/skill-registry.ts";
 import capabilityManifest from "../../packages/contracts/capabilities/registry.json" with { type: "json" };
@@ -65,6 +65,33 @@ test("navigation.start is rejected even when a future manifest permits it", () =
   }]);
   assert.deepEqual(validatePlan(futureRegistry, plan(call("navigate_to", "navigation.start")),
     { observationConsent: "explicit" }), { ok: false, code: "tool_not_allowed", actionIndex: 0 });
+});
+
+test("navigation.start stays forbidden if its future Tool exposure becomes model", () => {
+  assert.equal(isPlanToolExposureAllowed("navigation.start", "model"), false);
+  assert.equal(isPlanToolExposureAllowed("facts.query", "model"), true);
+});
+
+test("ordinary scene inspection cannot request the crossing-only traffic signal capability", () => {
+  for (const skillId of ["inspect_scene", "find_target"]) {
+    assert.deepEqual(validatePlan(registry, plan(call(skillId, "observation.request", {
+      capability_id: "vision.traffic_signal",
+    })), { observationConsent: "explicit" }),
+    { ok: false, code: "policy_required", actionIndex: 0 });
+  }
+  assert.deepEqual(validatePlan(registry, plan(call("inspect_scene", "observation.request", {
+    capability_id: "vision.scene",
+  })), { observationConsent: "explicit" }), { ok: true });
+});
+
+test("traffic signal remains crossing-only when the registry omits crossing_advisory", () => {
+  const ordinaryOnly = new SkillRegistry([{
+    skillId: "inspect_scene", riskLevel: "low", allowedTools: ["observation.request"],
+  }]);
+  assert.deepEqual(validatePlan(ordinaryOnly, plan(call("inspect_scene", "observation.request", {
+    capability_id: "vision.traffic_signal",
+  })), { observationConsent: "explicit" }),
+  { ok: false, code: "policy_required", actionIndex: 0 });
 });
 
 test("a Skill manifest cannot grant an unregistered tool", () => {
@@ -182,7 +209,7 @@ test("observation consent must be exactly explicit or preauthorized", () => {
 test("malformed plan identity and unexpected fields fail closed", () => {
   for (const fields of [
     { planId: "" }, { sessionId: null }, { eventId: 7 },
-    { goal: "" }, { createdAt: "not-a-date" }, { responseDraft: 42 },
+    { goal: "" }, { createdAt: "not-a-date" }, { createdAt: "2026-09-22" }, { responseDraft: 42 },
     { unexpected: true },
   ]) {
     assert.deepEqual(validatePlan(registry, { ...basePlan, ...fields } as AgentPlan,

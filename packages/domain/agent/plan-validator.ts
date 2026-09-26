@@ -4,6 +4,11 @@ import capabilityManifest from "../../contracts/capabilities/registry.json" with
 
 const toolExposure = new Map(toolManifest.tools.map((tool) => [tool.tool_id, tool.exposure]));
 
+export function isPlanToolExposureAllowed(toolId: string, exposure: string | undefined): boolean {
+  if (toolId === "navigation.start") return false;
+  return exposure === "model" || (toolId === "observation.request" && exposure === "policy");
+}
+
 export function isCapabilityCompatibleWithSkill(
   capabilities: readonly { id: string; compatible_skills?: readonly string[] }[],
   capabilityId: unknown,
@@ -83,6 +88,7 @@ export function validatePlan(
       !isNonemptyString(plan.planId) || !isNonemptyString(plan.sessionId) ||
       !isNonemptyString(plan.eventId) || !isNonemptyString(plan.goal) ||
       !isNonemptyString(plan.createdAt) ||
+      !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/i.test(plan.createdAt) ||
       Number.isNaN(Date.parse(plan.createdAt)) ||
       (plan.responseDraft !== undefined && typeof plan.responseDraft !== "string")) {
     return { ok: false, code: "invalid_plan", actionIndex: 0 };
@@ -114,7 +120,7 @@ export function validatePlan(
 
     const exposure = toolExposure.get(action.toolId);
     if (!skill.allowedTools.includes(action.toolId) ||
-        (exposure !== "model" && !(action.toolId === "observation.request" && exposure === "policy"))) {
+        !isPlanToolExposureAllowed(action.toolId, exposure)) {
       return { ok: false, code: "tool_not_allowed", actionIndex };
     }
 
@@ -122,6 +128,13 @@ export function validatePlan(
       if (permissions?.observationConsent !== "explicit" &&
           permissions?.observationConsent !== "preauthorized") {
         return { ok: false, code: "consent_required", actionIndex };
+      }
+      const capability = capabilityManifest.capabilities.find(
+        ({ id }) => id === action.arguments.capability_id,
+      );
+      if (capability?.policy === "crossing-advisory" &&
+          skill.requiredPolicy !== capability.policy) {
+        return { ok: false, code: "policy_required", actionIndex };
       }
       if (action.skillId === "crossing_advisory" &&
           action.arguments.capability_id !== "vision.traffic_signal") {
