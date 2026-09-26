@@ -1,4 +1,10 @@
-# 黄金场景：导航到约定餐厅并完成菜单与表情辅助
+# 参数化验收场景：导航到约定餐厅并请求菜单与表情辅助
+
+本场景是跨端集成的验收样例，不是 Agent 核心中永久存在的“餐厅工作流”或状态机。目标地点、观察对象和阅读内容均来自用户当前语音目标；用户也可以选择商店、医院等其他目的地，或跳过后续观察。当前 P0 已有离线 Agent 核心及路口回放；本页其余真实地图、设备、语音与视觉步骤仍需适配器集成验证。
+
+The scenario is a parameterized TaskPlan: navigate_to(target), then optional find_target(target=entrance), then user-requested read_text(mode=menu).
+
+这里的 `TaskPlan` 是需求层的步骤示意，不是要求新增一个固定代码类型。运行时由 LLM 根据 Event 与已注册 Skill 生成 `AgentPlan`，由 Harness 校验并执行。表情辅助也是用户另行明确提出的可选观察请求，不是菜单阅读后的默认下一步。
 
 ## 用户目标
 
@@ -11,21 +17,18 @@
 - 地图和视觉服务可用；
 - 用户未开启主动自动拍摄。
 
-## 状态和事件
+## 示例事件与期望行为（非固定状态机）
 
-| 状态 | 进入事件 | 系统动作 | 用户动作 |
+| 示例时点 | 输入或外部事实 | 期望行为 | 授权边界 |
 |---|---|---|---|
-| `idle` | `destination.input_requested` | 播报“请说目的地” | 说出目的地 |
-| `destination_confirm` | `destination.candidates_listed` | 播报候选 POI | 说“第一个”或别名 |
-| `navigating` | `navigation.started` | 开始关键节点提醒 | 行走 |
-| `intersection_check` | `navigation.intersection_approaching` | 播报“前方路口，需要检查时请按键或说检查” | 按键或说“检查” |
-| `crossing_advisory` | `observation.result_received(capability_id=vision.traffic_signal)` | 播报等待、重查或谨慎辅助建议 | 根据提示停留或继续确认 |
-| `approaching_destination` | `navigation.approaching_maneuver` | 播报接近目的地 | 准备观察 |
-| `entrance_check` | `observation.prompted` | 播报“请按键观察入口” | 按键拍摄 |
-| `inside_restaurant` | `observation.entrance_confirmed` | 播报入口结果 | 进入餐厅 |
-| `menu_reading` | `observation.menu_requested` | 读取菜单摘要 | 按键或追问 |
-| `conversation_assist` | `observation.expression_requested` | 描述可见表情和限制 | 明确提出请求 |
-| `completed` | `session.completed` | 播报结束或保持待机 | — |
+| 寻找地点 | 用户说出目的地 | 语音列出候选并请求确认 | 不能要求手机选点 |
+| 导航中 | 地图返回路线和转向事实 | 关键节点语音提醒 | `navigation.start` 由导航服务/策略负责，模型不能直接调用 |
+| 接近路口 | `navigation.intersection_approaching` 或 `navigation.crosswalk_approaching` | 提供路口上下文和检查提示 | 导航 Event 不自动拍摄；拍摄需明确或预先授权 |
+| 路口观察后 | `vision.traffic_signal` 的有效 Provider 事实 | 确定性策略给出等待、重查或仅供辅助的谨慎建议 | 模型不能越过策略判断能否通行 |
+| 接近目标 | 导航接近/到达事实 | 提醒用户可按需观察入口 | 不自动拍摄 |
+| 看入口/读菜单 | 用户按键或语音请求 | Agent 组合 `find_target`、`read_text` 等 Skill | 逐次核对观察授权及结果有效性 |
+| 表情辅助 | 用户另行明确请求 | 只描述单帧可见迹象及不确定性 | 不做身份识别或真实情绪推断 |
+| 取消或结束 | 用户取消/求助或任务完成 | 终止待处理计划、给出合适提示 | 已发出的外部调用不保证撤销 |
 
 ## 语音示例
 
@@ -53,7 +56,7 @@
 - 用户全程不需要看手机屏幕；
 - 导航提醒和识图播报不会同时占用语音输出；
 - 接近目的地只提醒，不自动拍摄；
-- 接近路口时由 Agent 提醒，只有用户按键或语音确认后才拍摄；
+- 接近路口时由导航 Event 提供上下文；Agent 可提示检查，只有有效授权后才可请求拍摄；
 - 路口观察结果包含信号灯状态、方向匹配、斑马线、车辆活动和有效期；
 - 红灯、未知、过期、方向不匹配或低置信度时只能提示等待/重查；
 - 入口画面低置信度时明确要求重拍；
@@ -61,6 +64,8 @@
 - 表情辅助必须由用户明确请求，并输出不确定性；
 - 地图、模型或 CXR 断开时有明确降级提示；
 - 每个事件的 `session_id` 和 `sequence` 可回放。
+
+上面是跨端集成的目标验收标准，尚不能由当前 P0 离线测试全部证明。P0 当前应单独验收：录制的导航路口 Event 进入 `SessionOrchestrator.handle`，模型按 Skill 生成结构化 Plan，经授权门校验后产生 ToolResult，调用方提交规范 `followUpEvents`，最终由路口策略产生保守 `Effect`；无授权、事实不足或服务失败时不输出确定性通行指令，且全程不访问真实设备、网络或模型。
 
 ## 不在本场景承诺
 

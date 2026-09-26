@@ -2,21 +2,21 @@
 
 本文件把架构落实到“哪个文件负责什么、由谁实现、怎样验收”。它是组员领取任务和提交合并请求时的执行清单。
 
-以下路径是建议的源码布局；当前仓库先提供文档和合同，`src/` 文件由组员按选择的 TypeScript、Kotlin 或其他实现语言创建。文件名可以调整，但职责和接口不能绕开。
+以下路径兼有已实现的 P0 TypeScript 核心和后续适配器的建议布局。`packages/domain/agent/`、对应的 `tests/domain/`、合同及离线回放已有实现；各 `apps/*/src/` 真实设备、地图、语音和视觉 SDK 接入仍是待交付项。文件名可以调整，但职责和接口不能绕开。离线测试通过不等于真机可用。
 
 ## 总体调用链
 
 ```text
 语音输入 / 眼镜按键 / 摄像头
   → DeviceTransport
-  → SessionOrchestrator
-  → NavigationProvider / ObservationProvider
-  → DomainEvent / DomainEffect
+  → Agent SessionOrchestrator.handle(AgentEvent)
+  → LlmAgent 的 Plan → PlanValidator/Policy → ToolGateway/ProviderRouter 的 Result
+  → Effect / followUpEvents（由调用方显式回放）
   → SpeechOutput
   → 眼镜播报
 ```
 
-协议负责人实现“设备事件如何进来、命令如何发出去”；导航和识图负责人实现“事实如何产生”；系统集成负责人实现“何时调用、如何排队、如何降级”。
+协议负责人实现“设备事件如何进来、命令如何发出去”；导航和识图负责人实现“事实如何产生”；Agent 核心负责人维护“如何规划、校验、执行和回放”；系统集成负责人负责适配器装配、会话序号、语音排队及降级。导航提醒不会自动授权拍摄；路口安全建议只能由策略根据有效视觉事实产生。
 
 语音是所有语义交互的默认入口。实体键不替代语音输入，只负责唤起、拍摄确认、重拍、暂停/打断和紧急取消。
 
@@ -42,7 +42,6 @@
 | `apps/phone-companion/src/navigation/map-adapter.ts` | 地图 SDK 适配 | POI 搜索、候选确认、路线启动、偏航重规划、到达事件 |
 | `apps/phone-companion/src/navigation/destination-service.ts` | 语音目的地服务 | 将 `SpeechInput` 转为 POI 搜索、候选播报和语音确认 |
 | `apps/phone-companion/src/navigation/location-service.ts` | 定位输入 | 位置更新、定位质量、权限失败和暂时失联状态 |
-| `packages/domain/navigation-reminder-policy.ts` | 确定性提醒策略 | 接近转向、偏航、重规划、到达等事件生成 `SpeechEffect` |
 | `packages/testkit/fake-navigation-provider.ts` | 导航模拟 | 可按脚本产生开始、转向、偏航、到达和 GPS 弱事件 |
 
 验收标准：用户只通过语音即可完成目的地输入和候选确认，不需要手机屏幕；地图适配器只产生导航事实，不直接播放音频、不调用视觉模型；定位或地图不可用时有明确降级语音。
@@ -57,26 +56,45 @@
 | `apps/gateway/src/vision/scene-adapter.ts` | 场景/入口能力实现 | 输出命名事实，不直接改变会话状态 |
 | `apps/gateway/src/vision/expression-adapter.ts` | 可见表情能力实现 | 仅处理用户明确请求的单帧观察，禁止身份识别和真实情绪推断 |
 | `packages/contracts/capabilities/registry.json` | 能力注册表 | 声明能力 ID、Provider、结果 Schema、策略和语音模板 |
-| `packages/domain/policies/` | 声明式领域策略 | 按事实和上下文生成统一领域效果，不为每个场景复制编排流程 |
 | `packages/testkit/observation-fixtures/` | 视觉测试夹具 | 脱敏图片、期望结构、低置信度和超时样例 |
 
 验收标准：能力都返回合同规定的状态、摘要、置信度、事实、重拍建议和限制；新增能力不要求修改 `SessionOrchestrator`；低置信度不会伪装成确定事实；模型超时、图像模糊和服务不可用都可被上层处理。
 
-## 负责人 D：系统集成与会话编排
+## 负责人 D：Agent 核心
+
+| 文件 | 功能 | 必须交付 |
+|---|---|---|
+| `packages/domain/agent/` | 已有 P0 Agent 入口、上下文、LLM 端口、计划校验、任务执行、ToolGateway 逻辑适配与导航触发 | 保持 `Event → Plan → Result → Effect`，Skill 可组合，不增加目的地硬编码流程；限制路口模型语音和高风险结论 |
+| `packages/domain/policies/`、`packages/domain/navigation-reminder-policy.ts`、`packages/domain/speech-priority-policy.ts` | 确定性领域与播报策略 | 高风险建议、导航提醒及语音优先级不交给 Provider 或模型直接决定 |
+| `tests/domain/` | Agent、Skill、Tool 与策略的离线合同及行为测试 | 覆盖授权/拒绝、结果反馈、取消、重复 Event、路口低置信度和失败保守处理 |
+| `tests/scenarios/navigation-crossing-replay.test.ts` | 录制的导航路口回放 | 证明导航 Event 建立路口上下文、经授权观察后由策略播报；不得调用真机、网络或真实模型 |
+
+验收标准：模型按语音目标组合已注册 Skill；无授权观察被拒绝；`navigation.start` 不由模型直接调用；跨端只交换结构化 Event、Plan、Result、Effect；Tool 结果通过规范 `followUpEvents` 回放；紧急取消可打断待处理流程。Agent 核心负责人不接管设备、地图、语音、视觉 SDK 适配器。
+
+## 负责人 E：手机运行时与系统集成
 
 | 文件 | 功能 | 必须交付 |
 |---|---|---|
 | `packages/domain/session-state.ts` | 会话状态 | `idle`、导航、入口观察、菜单阅读、追问和完成状态 |
 | `packages/domain/session-orchestrator.ts` | 唯一业务入口 | 将设备、导航和识图事件转换为领域效果；不依赖具体 SDK |
-| `packages/domain/agent/` | 核心 Agent 决策层 | 事件归一化、能力规划、策略、安全闸门、行动计划和回放审计 |
 | `packages/providers/registry/tool-registry.json` | Tool 注册表 | 区分模型、策略和内部工具，声明 Schema、风险、超时、重试和事件 |
-| `packages/domain/speech-priority-policy.ts` | 播报仲裁 | 导航、风险、识图、用户追问按优先级排队和打断 |
-| `packages/providers/speech/speech-input.ts` | 语音输入抽象 | 统一手机/眼镜麦克风、ASR 结果和意图提示 |
-| `apps/phone-companion/src/speech/speech-input-adapter.ts` | ASR 适配 | 将平台语音识别结果转换为 `SpeechInput`，处理超时、低置信度和取消 |
 | `apps/phone-companion/src/session/session-runtime.ts` | 运行时组装 | 注入真实或模拟适配器，维护 `session_id` 和 `sequence` |
 | `tests/scenarios/golden-path-navigation-restaurant.test.*` | 端到端回放 | 覆盖导航、入口、菜单、追问、表情辅助和故障降级 |
 
-验收标准：完整流程无需手机屏幕；目的地、确认、菜单追问和表情请求均可用语音完成；系统提醒不会自动触发拍摄；Agent 不能直接调用设备或供应商 SDK；导航播报和识图播报不会互相覆盖；所有事件、事实、计划和拒绝原因可以按 `session_id + sequence` 回放。
+验收标准：集成后的完整流程无需手机屏幕；目的地、确认、菜单追问和表情请求均可用语音完成；系统提醒不会自动触发拍摄；Agent 不能直接调用设备或供应商 SDK；导航播报和识图播报不会互相覆盖；所有事件、事实、计划和拒绝原因可以按 `session_id + sequence` 回放。这些集成验收项不因 P0 离线核心完成而自动达成。
+
+## 负责人 F：语音输入与输出适配
+
+| 文件 | 功能 | 必须交付 |
+|---|---|---|
+| `packages/providers/speech/speech-input-provider.ts` | 已有语音输入端口 | 保持统一输入 Event 和错误语义，不耦合某家 ASR SDK |
+| `apps/phone-companion/src/speech/speech-input-adapter.ts` | 待实现 ASR 适配 | 把平台识别结果和超时/取消映射为统一输入，支持语音目的地和追问 |
+| `apps/phone-companion/src/speech/speech-output-adapter.ts` | 待实现播报适配 | 只消费经过优先级策略的 `SpeechEffect`，回报完成/失败 |
+| `packages/contracts/examples/` 中的语音夹具 | 合同样例 | 正常输入、低置信度、打断及播报失败样例 |
+
+验收标准：无屏幕语音输入可发起目标、确认候选和追问；策略生成的播报按优先级排队、可被紧急事件打断。语音负责人只维护注入的适配器和对应合同夹具，不修改 Agent 决策逻辑。
+
+协议、地图、视觉负责人同样只维护各自注入的适配器、模拟实现和对应合同夹具；跨领域策略及 `packages/domain/agent/` 由 Agent 核心负责人维护。合同 Schema 的跨组变更需共同评审。
 
 ## 共享合同和测试文件
 

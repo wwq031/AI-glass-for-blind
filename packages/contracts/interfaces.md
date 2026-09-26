@@ -1,6 +1,14 @@
-# 模块接口草案
+# 跨模块接口与接入边界
 
-以下是跨实现的接口形状。参数和错误语义必须保持稳定，具体语言实现放在对应 `apps/` 或 `packages/` 中。
+以下接口分为已实现的 P0 Agent 核心端口与待接入的真实设备/服务适配器。接口草案不代表 Rokid、地图、语音或视觉 SDK 已完成集成。参数和错误语义必须保持稳定，具体语言实现放在对应 `apps/` 或 `packages/` 中。
+
+## Agent 核心：Event → Plan → Result → Effect
+
+`packages/domain/agent/session-orchestrator.ts` 中的 `SessionOrchestrator.handle(event: AgentEvent, permissions?)` 是 P0 Agent 核心的唯一入口，异步返回 `effects`、`results`、可选 `rejection` 与 `followUpEvents`。调用方维护事件序号，并显式把 `followUpEvents` 作为下一次输入；工具结果不能越过这一步直接变成新的模型结论。拒绝的计划也会生成反馈 Event。取消、求助与设备断开可优先打断待处理计划；已经发送到外部的调用不保证撤销。
+
+`LlmAgent` 只接收脱敏的 Event、会话视图、Skill 列表和近期结果，并返回结构化 `AgentPlan`。模型可组合注册的 Skill，但 `PlanValidator` 和策略界定能否执行：模型不能自行调用 `navigation.start`；观察需明确或预先授权，执行时以策略来源进入 ToolGateway；路口安全建议仅由确定性 `CrossingAdvisoryPolicy` 基于有效 Provider 事实生成。导航路口 Event 只建立上下文，不等于拍摄许可。
+
+`ToolGateway` 是逻辑调用合同，而不是某一种蓝牙、地图或云端 SDK。核心依赖注入该合同；已有 `ConcreteToolGatewayAdapter` 负责映射到 Tool 注册表与执行网关。`LocalProvider`、`RemoteProvider`、`McpProviderAdapter` 和 `RecordedProvider` 是核心外 `ProviderRouter` 的实现选择，不是 Agent 核心内必须同时启动的组件。当前离线验收使用录制的 LLM 计划和 Tool 结果；真实本地、远程或 MCP 适配器尚需分别接入和验证。
 
 ## DeviceTransport
 
@@ -81,7 +89,7 @@ confirm(candidateId: string) -> Destination
 
 会话恢复使用 `SessionSnapshot`，跨模块失败使用 `ContractError`。错误必须说明来源、错误码、是否可重试和建议的用户动作，不能只传自由文本。
 
-## SessionOrchestrator
+## 应用/会话层 SessionOrchestrator 草案
 
 ```text
 handle(event: DomainEvent) -> DomainEffect[]
@@ -89,4 +97,4 @@ snapshot() -> SessionSnapshot
 restore(snapshot: SessionSnapshot) -> void
 ```
 
-这是领域核心的唯一外部入口。它不创建 Android、JSUI、CXR 或模型客户端，而是通过依赖注入接收适配器。
+这是应用/会话层的早期接口草案，不要与上面已经实现的 `packages/domain/agent/session-orchestrator.ts` 混为一谈。Agent 核心 `handle` 的实际输入、输出和异步语义以上面的 P0 合同为准。两层都不应直接创建 Android、JSUI、CXR 或模型客户端，而应注入适配器。
