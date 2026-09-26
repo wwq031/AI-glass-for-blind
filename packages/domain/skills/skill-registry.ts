@@ -1,56 +1,12 @@
 import { SkillRegistry, type SkillDefinition } from "../agent/types.ts";
-
-const P0_SKILLS: SkillDefinition[] = [
-  {
-    skillId: "navigate_to",
-    riskLevel: "low",
-    allowedTools: [
-      "navigation.search_destination",
-      "navigation.confirm_destination",
-      "navigation.start",
-      "speech.ask_user",
-    ],
-  },
-  {
-    skillId: "inspect_scene",
-    riskLevel: "low",
-    allowedTools: ["observation.request", "facts.query", "speech.ask_user"],
-  },
-  {
-    skillId: "read_text",
-    riskLevel: "low",
-    allowedTools: ["observation.request", "facts.query", "speech.ask_user"],
-  },
-  {
-    skillId: "find_target",
-    riskLevel: "low",
-    allowedTools: ["observation.request", "facts.query", "speech.ask_user"],
-  },
-  {
-    skillId: "follow_up",
-    riskLevel: "low",
-    allowedTools: ["facts.query", "speech.ask_user", "session.cancel"],
-  },
-  {
-    skillId: "crossing_advisory",
-    riskLevel: "high",
-    allowedTools: ["observation.request", "facts.query", "speech.ask_user"],
-    requiredPolicy: "crossing-advisory",
-  },
-  {
-    skillId: "obstacle_advisory",
-    riskLevel: "high",
-    allowedTools: ["observation.request", "facts.query", "speech.ask_user"],
-    requiredPolicy: "obstacle-advisory",
-  },
-  {
-    skillId: "menu_structuring",
-    riskLevel: "medium",
-    allowedTools: ["observation.request", "facts.query", "speech.ask_user"],
-    requiredPolicy: "menu-structuring",
-  },
-];
+import manifest from "../../contracts/skills/registry.json" with { type: "json" };
 
 export function createP0SkillRegistry(): SkillRegistry {
-  return new SkillRegistry(P0_SKILLS);
+  const skills: SkillDefinition[] = manifest.skills.map((skill) => ({
+    skillId: skill.skill_id,
+    riskLevel: skill.risk_level as SkillDefinition["riskLevel"],
+    allowedTools: skill.allowed_tools,
+    ...("required_policy" in skill ? { requiredPolicy: skill.required_policy } : {}),
+  }));
+  return new SkillRegistry(skills);
 }
