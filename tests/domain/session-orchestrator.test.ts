@@ -53,6 +53,36 @@ test("an invalid policy-only navigation.start Plan never reaches the gateway", a
   assert.deepEqual(tools.calls, []);
 });
 
+test("rejected Plan creates a bounded repair Event for the next LLM turn", async () => {
+  const invalid = plan([{
+    kind: "tool_call", skillId: "missing", toolId: "facts.query", arguments: {},
+  }]);
+  const repaired = plan([{ kind: "speak", text: "请再说明目的地", priority: "normal" }], "e-1:plan-rejected");
+  const { core, agent, tools } = orchestrator([invalid, repaired]);
+
+  const rejected = await core.handle(event());
+  assert.equal(rejected.rejection?.code, "unknown_skill");
+  assert.deepEqual(rejected.effects, []);
+  assert.deepEqual(rejected.results, []);
+  assert.deepEqual(tools.calls, []);
+  assert.equal(core.snapshot("s-1").lastSequence, 1);
+  assert.equal(rejected.followUpEvents?.length, 1);
+  const repairEvent = rejected.followUpEvents![0]!;
+  assert.equal(repairEvent.source, "system");
+  assert.equal(repairEvent.type, "plan.rejected");
+  assert.equal(repairEvent.sequence, 2);
+  assert.deepEqual(repairEvent.payload, { code: "unknown_skill", actionIndex: 0 });
+
+  const stale = await core.handle(event());
+  assert.equal(stale.rejection?.code, "stale_event");
+  assert.deepEqual(stale.followUpEvents, undefined);
+  assert.equal(agent.inputs.length, 1);
+
+  const repairedOutput = await core.handle(repairEvent);
+  assert.equal(repairedOutput.effects[0]?.payload.text, "请再说明目的地");
+  assert.equal(agent.inputs[1]?.event.type, "plan.rejected");
+});
+
 test("malformed model Plan is a structured rejection without gateway side effects", async () => {
   const malformed = { ...plan([]), actions: null } as unknown as AgentPlan;
   const { core, tools } = orchestrator([malformed]);

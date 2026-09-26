@@ -56,10 +56,10 @@ export class SessionOrchestrator {
       const plan = await this.options.agent.plan(input);
       const validation = validatePlan(this.options.skills, plan, permissions);
       if (!validation.ok) {
-        return { effects: [], results: [], rejection: { code: validation.code, actionIndex: validation.actionIndex } };
+        return this.rejectPlan(event, session, { code: validation.code, actionIndex: validation.actionIndex });
       }
       if (plan.sessionId !== event.sessionId || plan.eventId !== event.eventId || !plan.planId) {
-        return { effects: [], results: [], rejection: { code: "policy_required" } };
+        return this.rejectPlan(event, session, { code: "policy_required" });
       }
       const output = await this.runner.run(plan, permissions);
       session.view.lastSequence = event.sequence;
@@ -75,6 +75,24 @@ export class SessionOrchestrator {
     } finally {
       this.processing.delete(event.sessionId);
     }
+  }
+
+  private rejectPlan(
+    event: AgentEvent,
+    session: SessionRecord,
+    rejection: NonNullable<AgentHandleOutput["rejection"]>,
+  ): AgentHandleOutput {
+    session.view.lastSequence = event.sequence;
+    const payload: Record<string, unknown> = { code: rejection.code };
+    if (rejection.actionIndex !== undefined) payload.actionIndex = rejection.actionIndex;
+    return {
+      effects: [], results: [], rejection,
+      followUpEvents: [{
+        eventId: `${event.eventId}:plan-rejected`, sessionId: event.sessionId,
+        sequence: event.sequence + 1, source: "system", type: "plan.rejected",
+        occurredAt: (this.options.now ?? (() => new Date().toISOString()))(), payload,
+      }],
+    };
   }
 
   private getSession(sessionId: string): SessionRecord {
