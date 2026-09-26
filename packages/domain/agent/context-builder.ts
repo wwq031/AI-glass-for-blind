@@ -2,30 +2,30 @@ import type { AgentTurnInput } from "./llm-agent.ts";
 
 function isSensitiveKey(key: string): boolean {
   const normalized = key.replace(/[_-]/g, "").toLowerCase();
-  return normalized === "token"
-    || normalized === "secret"
-    || normalized === "authorization"
-    || normalized === "mediabytes"
-    || normalized === "rawmedia"
-    || normalized === "rawmediabytes"
-    || normalized === "rawaudiobytes"
-    || normalized === "rawimagebytes"
-    || normalized === "rawvideobytes"
-    || /^(raw)?(bluetooth|ble)(raw)?packets?$/.test(normalized);
+  return /(token|secret|authorization|apikey|password|credential)/.test(normalized)
+    || /^(raw)?(bluetooth|ble)(raw)?(packets?|bytes|data)$/.test(normalized)
+    || /^raw(media|audio|image|video)/.test(normalized)
+    || /(media|audio|image|video).*(bytes|buffer|blob|base64|data)$/.test(normalized);
 }
 
-function sanitize(value: unknown): unknown {
+function sanitize(value: unknown, ancestors: WeakSet<object> = new WeakSet()): unknown {
   if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return undefined;
-  if (Array.isArray(value)) {
-    return value.map(sanitize).filter((item) => item !== undefined);
-  }
   if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value)
-        .filter(([key]) => !isSensitiveKey(key))
-        .map(([key, item]) => [key, sanitize(item)])
-        .filter(([, item]) => item !== undefined)
-    );
+    if (ancestors.has(value)) return undefined;
+    ancestors.add(value);
+    try {
+      if (Array.isArray(value)) {
+        return value.map((item) => sanitize(item, ancestors)).filter((item) => item !== undefined);
+      }
+      return Object.fromEntries(
+        Object.entries(value)
+          .filter(([key]) => !isSensitiveKey(key))
+          .map(([key, item]) => [key, sanitize(item, ancestors)])
+          .filter(([, item]) => item !== undefined)
+      );
+    } finally {
+      ancestors.delete(value);
+    }
   }
   return value;
 }

@@ -76,6 +76,63 @@ test("context builder filters nested packets and credentials without changing it
   assert.deepEqual(input, original);
 });
 
+test("context builder removes common media bytes and credentials inside nested arrays", () => {
+  const input = {
+    event: {
+      eventId: "e-4", sessionId: "s-1", sequence: 4,
+      source: "provider" as const, type: "observation.completed", occurredAt,
+      payload: {
+        observations: [{
+          observationId: "ob-2", summary: "路口在前方",
+          audioBytes: [1], imageBytes: [2], videoBytes: [3],
+          accessToken: "private", apiKey: "private",
+          details: [{ factId: "f-1", value: "green", clientSecret: "private", rawBluetoothPacket: [4] }],
+        }],
+      },
+    },
+    session: { sessionId: "s-1", lastSequence: 3, activeSkills: [] },
+    skills: [],
+    recentResults: [{ callId: "c-1", output: [{ summary: "已识别", audioBytes: [5], apiKey: "private" }] }],
+  };
+  const original = structuredClone(input);
+
+  const context = buildAgentTurnInput(input);
+
+  assert.deepEqual(context.event.payload, {
+    observations: [{
+      observationId: "ob-2", summary: "路口在前方",
+      details: [{ factId: "f-1", value: "green" }],
+    }],
+  });
+  assert.deepEqual(context.recentResults, [{ callId: "c-1", output: [{ summary: "已识别" }] }]);
+  assert.deepEqual(input, original);
+});
+
+test("context builder omits cyclic branches without changing source objects", () => {
+  const detail: Record<string, unknown> = { summary: "出口在左边" };
+  detail.self = detail;
+  const input = {
+    event: {
+      eventId: "e-5", sessionId: "s-1", sequence: 5,
+      source: "provider" as const, type: "observation.completed", occurredAt,
+      payload: { detail, observations: [detail] },
+    },
+    session: { sessionId: "s-1", lastSequence: 4, activeSkills: [] },
+    skills: [],
+    recentResults: [{ callId: "c-2", detail }],
+  };
+
+  const context = buildAgentTurnInput(input);
+
+  assert.deepEqual(context.event.payload, {
+    detail: { summary: "出口在左边" },
+    observations: [{ summary: "出口在左边" }],
+  });
+  assert.deepEqual(context.recentResults, [{ callId: "c-2", detail: { summary: "出口在左边" } }]);
+  assert.equal(detail.self, detail);
+  assert.equal(input.event.payload.detail, detail);
+});
+
 test("recorded LLM consumes plans in order and isolates replay records", async () => {
   const plans = [
     { planId: "p-1", sessionId: "s-1", eventId: "e-1", goal: "ask", actions: [{ kind: "speak" as const, text: "first", priority: "normal" as const }], createdAt: occurredAt },
