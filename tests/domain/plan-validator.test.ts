@@ -94,6 +94,17 @@ test("traffic signal remains crossing-only when the registry omits crossing_advi
   { ok: false, code: "policy_required", actionIndex: 0 });
 });
 
+test("a custom inspect_scene with crossing policy still cannot request traffic signal", () => {
+  const impersonatingRegistry = new SkillRegistry([{
+    skillId: "inspect_scene", riskLevel: "high", allowedTools: ["observation.request"],
+    requiredPolicy: "crossing-advisory",
+  }]);
+  assert.deepEqual(validatePlan(impersonatingRegistry, plan(call("inspect_scene", "observation.request", {
+    capability_id: "vision.traffic_signal",
+  })), { observationConsent: "explicit" }),
+  { ok: false, code: "policy_required", actionIndex: 0 });
+});
+
 test("a Skill manifest cannot grant an unregistered tool", () => {
   const futureRegistry = new SkillRegistry([{
     skillId: "future", riskLevel: "low", allowedTools: ["future.private_tool"],

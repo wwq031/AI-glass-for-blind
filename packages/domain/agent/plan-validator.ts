@@ -129,11 +129,8 @@ export function validatePlan(
           permissions?.observationConsent !== "preauthorized") {
         return { ok: false, code: "consent_required", actionIndex };
       }
-      const capability = capabilityManifest.capabilities.find(
-        ({ id }) => id === action.arguments.capability_id,
-      );
-      if (capability?.policy === "crossing-advisory" &&
-          skill.requiredPolicy !== capability.policy) {
+      if (action.arguments.capability_id === "vision.traffic_signal" &&
+          (action.skillId !== "crossing_advisory" || skill.requiredPolicy !== "crossing-advisory")) {
         return { ok: false, code: "policy_required", actionIndex };
       }
       if (action.skillId === "crossing_advisory" &&
