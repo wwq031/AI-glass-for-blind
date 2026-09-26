@@ -493,6 +493,8 @@ export function validatePlan(
 
 Validate every tool_call action in order. Reject an unknown Skill, a Tool outside the Skill allowedTools list, a fifth action, and observation.request with observationConsent equal to none. For crossing_advisory, require capability_id equal to vision.traffic_signal and return policy_required if it is absent or different. Configure read_text to allow observation.request with any registered text-reading capability_id. Speak, wait, and complete actions are valid without a Skill lookup.
 
+The Skill allowedTools list expresses a Skill dependency, not model permission. The Tool Registry marks observation.request as exposure=policy. PlanValidator must reject any model-authored policy-only Tool except observation.request, which is a proposal that still requires explicit or preauthorized observation consent and the Skill-specific guard. navigation.start must never be accepted from an LLM Plan; a confirmed destination is started by the navigation policy through the existing ToolGateway. Add a negative test for navigation.start and an authorized observation test. Neither the LLM Plan nor its arguments may set ToolCall.origin.
+
 - [ ] **Step 4: Run validator and full type checks**
 
 Run:
@@ -578,6 +580,8 @@ export interface ToolGateway {
     actionIndex: number;
     toolId: string;
     arguments: Record<string, unknown>;
+    origin: "agent" | "policy";
+    consent: "none" | "explicit" | "preauthorized";
   }): Promise<ToolResult>;
 }
 ~~~
@@ -591,6 +595,8 @@ TaskRunner must:
 3. Return each ToolResult without fabricating a success result.
 4. Convert complete action into one session Effect.
 5. Leave wait actions without an Effect.
+
+TaskRunner receives only a validated Plan and its execution permissions. For ordinary model-exposed Tools it passes origin=agent. For an approved observation.request it passes origin=policy only after PlanValidator has accepted the Skill-specific conditions and the observation consent; the model cannot supply origin. An adapter to the existing packages/domain/tools/tool-gateway.ts must preserve this origin when constructing a concrete ToolCall. Add a test that an LLM Plan for navigation.start produces a rejection and never reaches the gateway.
 
 SessionOrchestrator.handle must:
 
