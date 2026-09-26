@@ -11,13 +11,14 @@ export interface AgentHandleOutput {
   /** Caller may explicitly submit these as the next Event; no automatic LLM loop. */
   followUpEvents?: AgentEvent[];
   rejection?: {
-    code: "stale_event" | Exclude<PlanValidation, { ok: true }>["code"];
+    code: "stale_event" | "pending_feedback" | "invalid_feedback" | Exclude<PlanValidation, { ok: true }>["code"];
     actionIndex?: number;
   };
 }
 
 interface SessionRecord {
   view: AgentSessionView;
+  pendingFeedback?: AgentEvent;
 }
 
 export class SessionOrchestrator {
@@ -41,37 +42,57 @@ export class SessionOrchestrator {
     return { sessionId: view.sessionId, lastSequence: view.lastSequence, activePlanId: view.activePlanId };
   }
 
+  /**
+   * Feed followUpEvents back explicitly. While feedback is pending, an unrelated Event is
+   * rejected with pending_feedback; submit it again with a new sequence after feedback.
+   * The pending Event's stored payload is authoritative, never the caller's copy.
+   */
   async handle(event: AgentEvent, permissions: ExecutionPermissions = { observationConsent: "none" }): Promise<AgentHandleOutput> {
     const session = this.getSession(event.sessionId);
     if (event.sequence <= session.view.lastSequence || this.processing.has(event.sessionId)) {
       return { effects: [], results: [], rejection: { code: "stale_event" } };
     }
+    const pending = session.pendingFeedback;
+    if (pending && !this.matchesPendingFeedback(event, pending)) {
+      // The feedback owns the next sequence. Resubmit unrelated Events with a new sequence after feedback.
+      return { effects: [], results: [], rejection: { code: "pending_feedback" } };
+    }
+    if (!pending && this.isFeedback(event)) {
+      return { effects: [], results: [], rejection: { code: "invalid_feedback" } };
+    }
     this.processing.add(event.sessionId);
     try {
+      const canonicalEvent = pending ? structuredClone(pending) : event;
       const input = buildAgentTurnInput({
-        event, session: session.view, skills: this.options.skills.list(),
-        recentResults: event.type === "tool.results" && Array.isArray(event.payload.results)
-          ? event.payload.results : [],
+        event: canonicalEvent, session: session.view, skills: this.options.skills.list(),
+        recentResults: canonicalEvent.type === "tool.results" && Array.isArray(canonicalEvent.payload.results)
+          ? canonicalEvent.payload.results : [],
       });
       const plan = await this.options.agent.plan(input);
       const validation = validatePlan(this.options.skills, plan, permissions);
       if (!validation.ok) {
-        return this.rejectPlan(event, session, { code: validation.code, actionIndex: validation.actionIndex });
+        return this.rejectPlan(canonicalEvent, session, { code: validation.code, actionIndex: validation.actionIndex });
       }
-      if (plan.sessionId !== event.sessionId || plan.eventId !== event.eventId || !plan.planId) {
-        return this.rejectPlan(event, session, { code: "policy_required" });
+      if (plan.sessionId !== canonicalEvent.sessionId || plan.eventId !== canonicalEvent.eventId || !plan.planId) {
+        return this.rejectPlan(canonicalEvent, session, { code: "policy_required" });
       }
-      const output = await this.runner.run(plan, permissions);
-      session.view.lastSequence = event.sequence;
+      // Commit before tool execution: a thrown gateway may already have caused an external side effect.
+      session.view.lastSequence = canonicalEvent.sequence;
       session.view.activePlanId = plan.planId;
       session.view.goal = plan.goal;
-      if (output.results.length === 0) return output;
-      return { ...output, followUpEvents: [{
-        eventId: `${plan.planId}:results`, sessionId: event.sessionId,
-        sequence: event.sequence + 1, source: "provider", type: "tool.results",
+      const output = await this.runner.run(plan, permissions);
+      if (output.results.length === 0) {
+        session.pendingFeedback = undefined;
+        return output;
+      }
+      const feedback: AgentEvent = {
+        eventId: `${plan.planId}:results`, sessionId: canonicalEvent.sessionId,
+        sequence: canonicalEvent.sequence + 1, source: "provider", type: "tool.results",
         occurredAt: (this.options.now ?? (() => new Date().toISOString()))(),
         payload: { results: structuredClone(output.results) },
-      }] };
+      };
+      session.pendingFeedback = structuredClone(feedback);
+      return { ...output, followUpEvents: [structuredClone(feedback)] };
     } finally {
       this.processing.delete(event.sessionId);
     }
@@ -85,14 +106,26 @@ export class SessionOrchestrator {
     session.view.lastSequence = event.sequence;
     const payload: Record<string, unknown> = { code: rejection.code };
     if (rejection.actionIndex !== undefined) payload.actionIndex = rejection.actionIndex;
+    const feedback: AgentEvent = {
+      eventId: `${event.eventId}:plan-rejected`, sessionId: event.sessionId,
+      sequence: event.sequence + 1, source: "system", type: "plan.rejected",
+      occurredAt: (this.options.now ?? (() => new Date().toISOString()))(), payload,
+    };
+    session.pendingFeedback = structuredClone(feedback);
     return {
       effects: [], results: [], rejection,
-      followUpEvents: [{
-        eventId: `${event.eventId}:plan-rejected`, sessionId: event.sessionId,
-        sequence: event.sequence + 1, source: "system", type: "plan.rejected",
-        occurredAt: (this.options.now ?? (() => new Date().toISOString()))(), payload,
-      }],
+      followUpEvents: [structuredClone(feedback)],
     };
+  }
+
+  private isFeedback(event: AgentEvent): boolean {
+    return event.type === "tool.results" || event.type === "plan.rejected";
+  }
+
+  private matchesPendingFeedback(event: AgentEvent, pending: AgentEvent): boolean {
+    return this.isFeedback(event) && event.eventId === pending.eventId &&
+      event.sessionId === pending.sessionId && event.sequence === pending.sequence &&
+      event.type === pending.type && event.source === pending.source;
   }
 
   private getSession(sessionId: string): SessionRecord {

@@ -26,12 +26,22 @@ export class TaskRunner {
         if (observation && permissions.observationConsent !== "explicit" && permissions.observationConsent !== "preauthorized") {
           throw new Error("Observation requires consent before policy execution");
         }
-        const result = await this.options.tools.execute({
-          sessionId: plan.sessionId, plan, actionIndex,
-          toolId: action.toolId, arguments: action.arguments,
-          origin: observation ? "policy" : "agent",
-          consent: observation ? permissions.observationConsent : "none",
-        });
+        let result: ToolResult;
+        try {
+          result = await this.options.tools.execute({
+            sessionId: plan.sessionId, plan, actionIndex,
+            toolId: action.toolId, arguments: action.arguments,
+            origin: observation ? "policy" : "agent",
+            consent: observation ? permissions.observationConsent : "none",
+          });
+        } catch {
+          // The provider may already have performed a side effect; never report success or retry here.
+          result = {
+            callId: `${plan.planId}:${actionIndex}`, sessionId: plan.sessionId, toolId: action.toolId,
+            status: "failed", completedAt: createdAt(), output: {}, facts: [],
+            error: { code: "execution_uncertain", message: "Tool outcome is uncertain; do not retry automatically.", retryable: false },
+          };
+        }
         results.push(result);
         awaitingResult = true;
         if (result.status !== "succeeded" && result.status !== "partial") break;
