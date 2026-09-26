@@ -32,6 +32,23 @@ test("partial observation never yields proceed advice even with positive facts",
   assert.notEqual(adviseCrossingFromResult(result, now).action, "proceed_with_caution");
 });
 
+test("adapter waits on a fresh confirmed hazard despite unrelated unknown facts", () => {
+  const base = { callId: "c1", sessionId: "s1", toolId: "observation.request", status: "partial" as const,
+    completedAt: now, output: {}, facts: [
+      { name: "traffic_signal.direction_match", value: "yes", confidence: "high" as const, validUntil },
+    ] };
+  const red = { ...base, facts: [...base.facts,
+    { name: "traffic_signal.state", value: "red", confidence: "high" as const, validUntil },
+  ] };
+  const vehicle = { ...base, facts: [...base.facts,
+    { name: "vehicle.activity", value: "yes", confidence: "high" as const, validUntil },
+  ] };
+  assert.equal(adviseCrossingFromResult(red, now).action, "wait");
+  assert.equal(adviseCrossingFromResult(vehicle, now).action, "wait");
+  assert.equal(adviseCrossingFromResult({ ...red, facts: red.facts.map((fact) =>
+    fact.name === "traffic_signal.state" ? { ...fact, validUntil: "2026-09-22T10:00:09.000Z" } : fact) }, now).action, "cannot_determine");
+});
+
 test("unknown, missing, expired, or direction mismatch fails closed", () => {
   for (const evidence of [
     { ...certain, trafficSignal: "unknown" as const },

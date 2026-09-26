@@ -1,6 +1,6 @@
 import { buildAgentTurnInput } from "./context-builder.ts";
 import { skillContextFromNavigationEvent } from "./navigation-trigger.ts";
-import { adviseCrossingFromResult } from "../policies/crossing-advisory.ts";
+import { adviseCrossing, adviseCrossingFromResult } from "../policies/crossing-advisory.ts";
 import type { LlmAgent, AgentSessionView } from "./llm-agent.ts";
 import { validatePlan, type ExecutionPermissions, type PlanValidation } from "./plan-validator.ts";
 import { TaskRunner } from "./task-runner.ts";
@@ -64,6 +64,11 @@ export class SessionOrchestrator {
     if (this.processing.has(event.sessionId)) {
       return { effects: [], results: [], rejection: { code: "stale_event" } };
     }
+    if (session.crossingPending && this.isRouteProgress(event)) {
+      session.crossingPending = false;
+      session.pendingCrossingCallId = undefined;
+      session.pendingFeedback = undefined;
+    }
     const pending = session.pendingFeedback;
     if (pending && !this.matchesPendingFeedback(event, pending)) {
       // The feedback owns the next sequence. Resubmit unrelated Events with a new sequence after feedback.
@@ -93,7 +98,7 @@ export class SessionOrchestrator {
     try {
       const canonicalEvent = pending ? structuredClone(pending) : event;
       const navigationContext = skillContextFromNavigationEvent(canonicalEvent);
-      if (navigationContext.urgentSkillId) session.crossingPending = true;
+      if (navigationContext.urgentSkillId || this.isUserCrossingRequest(canonicalEvent)) session.crossingPending = true;
       const input = buildAgentTurnInput({
         event: canonicalEvent, session: { ...session.view, ...(navigationContext.navigation ? { navigation: navigationContext.navigation } : {}) }, skills: this.options.skills.list(),
         recentResults: canonicalEvent.type === "tool.results" && Array.isArray(canonicalEvent.payload.results)
@@ -101,8 +106,14 @@ export class SessionOrchestrator {
       }, navigationContext.urgentSkillId);
       const plan = await this.options.agent.plan(input);
       if (session.epoch !== epoch) return { effects: [], results: [], rejection: { code: "interrupted" } };
+      const proposesCrossing = Array.isArray(plan?.actions) && plan.actions.some((action) =>
+        action?.kind === "tool_call" && action.skillId === "crossing_advisory");
+      if (proposesCrossing) session.crossingPending = true;
       const validation = validatePlan(this.options.skills, plan, permissions);
       if (!validation.ok) {
+        if (session.crossingPending && proposesCrossing && validation.code === "consent_required") {
+          return this.finishUnconfirmedCrossing(canonicalEvent, session, { code: validation.code, actionIndex: validation.actionIndex });
+        }
         return this.rejectPlan(canonicalEvent, session, { code: validation.code, actionIndex: validation.actionIndex });
       }
       if (plan.sessionId !== canonicalEvent.sessionId || plan.eventId !== canonicalEvent.eventId || !plan.planId) {
@@ -116,6 +127,10 @@ export class SessionOrchestrator {
         rejected.effects.push({ effectId: `${canonicalEvent.eventId}:crossing-reminder`, sessionId: canonicalEvent.sessionId,
           type: "speech", createdAt, payload: { text: "请先停下。路口情况尚未确认，需要观察结果后才能提供辅助提示。", priority: "critical" } });
         return rejected;
+      }
+      if (session.crossingPending && plan.actions.every((action) => action.kind === "wait")) {
+        session.view.activePlanId = plan.planId;
+        return this.finishUnconfirmedCrossing(canonicalEvent, session);
       }
       // Commit before tool execution: a thrown gateway may already have caused an external side effect.
       session.view.lastSequence = canonicalEvent.sequence;
@@ -203,6 +218,34 @@ export class SessionOrchestrator {
 
   private isFeedback(event: AgentEvent): boolean {
     return event.type === "tool.results" || event.type === "plan.rejected";
+  }
+
+  private isUserCrossingRequest(event: AgentEvent): boolean {
+    if (event.source !== "user") return false;
+    if (event.type === "user.crossing_query") return true;
+    if (event.type !== "speech.input") return false;
+    const transcript = event.payload.transcript;
+    // Provisional fallback for legacy speech adapters; normalize to user.crossing_query upstream.
+    return typeof transcript === "string" && /(过马路|过街|红绿灯|斑马线|路口.{0,8}(能过|可以过|过吗)|crosswalk|traffic light|safe to cross)/i.test(transcript);
+  }
+
+  private isRouteProgress(event: AgentEvent): boolean {
+    return event.source === "navigation" && ["navigation.started", "navigation.approaching_maneuver",
+      "navigation.off_route", "navigation.rerouting", "navigation.arrived", "navigation.stopped"].includes(event.type);
+  }
+
+  private finishUnconfirmedCrossing(
+    event: AgentEvent, session: SessionRecord, rejection?: AgentHandleOutput["rejection"],
+  ): AgentHandleOutput {
+    const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
+    const advisory = adviseCrossing({ now: createdAt });
+    session.view.lastSequence = event.sequence;
+    session.crossingPending = false;
+    session.pendingCrossingCallId = undefined;
+    session.pendingFeedback = undefined;
+    return { effects: [{ effectId: `${event.eventId}:crossing-unconfirmed`, sessionId: event.sessionId,
+      type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } }],
+      results: [], ...(rejection ? { rejection } : {}) };
   }
 
   private matchesPendingFeedback(event: AgentEvent, pending: AgentEvent): boolean {

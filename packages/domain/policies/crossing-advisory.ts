@@ -42,6 +42,14 @@ export function adviseCrossingFromResult(result: ToolResult, now: string): Cross
   const signal = fact("traffic_signal.state");
   const direction = fact("traffic_signal.direction_match");
   const vehicle = fact("vehicle.activity");
+  const fresh = (item: typeof signal) => !!item?.validUntil && Number.isFinite(Date.parse(item.validUntil)) &&
+    Date.parse(item.validUntil) > Date.parse(now);
+  const confirmed = (item: typeof signal, value: string) => item?.value === value &&
+    (item.confidence === "high" || item.confidence === "medium") && fresh(item);
+  // A fresh, aligned hazard is enough to say wait; missing unrelated facts must not hide danger.
+  if (confirmed(direction, "yes") && (confirmed(signal, "red") || confirmed(vehicle, "yes"))) {
+    return { action: "wait", speech: "请先停下等待。观察到红灯或接近车辆；这只是辅助信息，请继续自行确认。" };
+  }
   const values = [signal, direction, vehicle];
   const latestExpiry = values.every((item) => item?.validUntil && Number.isFinite(Date.parse(item.validUntil))) ?
     new Date(Math.min(...values.map((item) => Date.parse(item!.validUntil!)))).toISOString() : undefined;

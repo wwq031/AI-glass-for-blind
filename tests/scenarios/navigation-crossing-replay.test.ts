@@ -98,3 +98,80 @@ test("crossing context rejects pre-result model speech even when observation is 
   assert.notEqual(out.effects[0]?.payload.text, "现在可以过马路。");
   assert.deepEqual(tools.calls, []);
 });
+
+test("user crossing question cannot get model speech before policy even without navigation", async () => {
+  const user: AgentEvent = { eventId: "ask-1", sessionId: "walk-1", sequence: 1, source: "user", type: "speech.input",
+    occurredAt: at, payload: { transcript: "前面路口能过马路吗？", intent_hint: "query" } };
+  const agent = new RecordedLlmAgent([plan("ask-1", [{ kind: "speak", text: "可以过。", priority: "high" }])]);
+  const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([]), skills: createP0SkillRegistry(), now });
+  const out = await core.handle(user);
+  assert.equal(out.rejection?.code, "policy_required");
+  assert.match(String(out.effects[0]?.payload.text), /请先停下/);
+  assert.notEqual(out.effects[0]?.payload.text, "可以过。");
+});
+
+test("normalized user.crossing_query activates the guard without transcript matching", async () => {
+  const user: AgentEvent = { eventId: "ask-1", sessionId: "walk-1", sequence: 1, source: "user", type: "user.crossing_query",
+    occurredAt: at, payload: { transcript: "请帮我判断" } };
+  const agent = new RecordedLlmAgent([plan("ask-1", [{ kind: "speak", text: "可以过。", priority: "high" }])]);
+  const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([]), skills: createP0SkillRegistry(), now });
+  const out = await core.handle(user);
+  assert.equal(out.rejection?.code, "policy_required");
+  assert.match(String(out.effects[0]?.payload.text), /请先停下/);
+});
+
+test("explicitly declined capture closes crossing with conservative policy speech and permits later arrival", async () => {
+  const agent = new RecordedLlmAgent([
+    plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-3", [{ kind: "speak", text: "已经抵达目的地。", priority: "normal" }]),
+  ]);
+  const tools = new RecordedToolGateway([]);
+  const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+  const declined = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "none" });
+  assert.equal(declined.rejection?.code, "consent_required");
+  assert.equal(declined.effects[0]?.payload.action, "cannot_determine");
+  assert.match(String(declined.effects[0]?.payload.text), /请先停下/);
+  assert.deepEqual(tools.calls, []);
+  const arrived = await core.handle(nav("navigation.arrived", 3));
+  assert.equal(arrived.effects[0]?.payload.text, "已经抵达目的地。");
+});
+
+test("wait-only crossing plan closes context and route progress retires rejected crossing feedback", async () => {
+  const agent = new RecordedLlmAgent([
+    plan("nav-2", [{ kind: "wait", eventTypes: ["navigation.arrived"] }]),
+    plan("nav-3", [{ kind: "speak", text: "路线继续。", priority: "normal" }]),
+  ]);
+  const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([]), skills: createP0SkillRegistry(), now });
+  const waiting = await core.handle(nav("navigation.intersection_approaching", 2));
+  assert.equal(waiting.effects[0]?.payload.action, "cannot_determine");
+  const progressed = await core.handle(nav("navigation.approaching_maneuver", 3));
+  assert.equal(progressed.effects[0]?.payload.text, "路线继续。");
+});
+
+test("authoritative route progress retires a pending crossing plan rejection", async () => {
+  const agent = new RecordedLlmAgent([
+    plan("nav-2", [{ kind: "speak", text: "可以过。", priority: "high" }]),
+    plan("nav-3", [{ kind: "speak", text: "已经抵达。", priority: "normal" }]),
+  ]);
+  const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([]), skills: createP0SkillRegistry(), now });
+  const rejected = await core.handle(nav("navigation.intersection_approaching", 2));
+  assert.equal(rejected.followUpEvents?.[0]?.type, "plan.rejected");
+  const arrival = await core.handle(nav("navigation.arrived", 3));
+  assert.equal(arrival.effects[0]?.payload.text, "已经抵达。");
+  assert.equal(agent.inputs.length, 2);
+});
+
+test("crossing Skill request guards speech even without navigation or crossing words", async () => {
+  const user: AgentEvent = { eventId: "ask-1", sessionId: "walk-1", sequence: 1, source: "user", type: "speech.input",
+    occurredAt: at, payload: { transcript: "帮我看一下", intent_hint: "query" } };
+  const agent = new RecordedLlmAgent([plan("ask-1", [
+    { kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } },
+    { kind: "speak", text: "现在可以过。", priority: "high" },
+  ])]);
+  const tools = new RecordedToolGateway([]);
+  const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+  const out = await core.handle(user, { observationConsent: "explicit" });
+  assert.equal(out.rejection?.code, "policy_required");
+  assert.match(String(out.effects[0]?.payload.text), /请先停下/);
+  assert.deepEqual(tools.calls, []);
+});
