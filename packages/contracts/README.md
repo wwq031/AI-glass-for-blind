@@ -42,6 +42,6 @@ Event enters Agent; AgentPlan is produced by LLM; ToolResult returns as a later 
 
 `session-snapshot.schema.json` 在既有恢复字段外，可选保存当前目标、活跃计划、待回答问题、事实和活跃 Skill。旧快照不需要这些字段，仍可通过验证。
 
-`capabilities/registry.json` 是观察能力的注册表。新增普通观察能力时优先新增注册项和事实 Schema，不修改会话核心合同。
+`capabilities/registry.json` 是观察能力的注册表。新增普通观察能力时优先新增注册项和事实 Schema，不修改会话核心合同。注册项可用 `compatible_skills` 明确声明可供哪些 Skill 提议；例如 `vision.menu` 声明 `read_text`。该字段只用于计划兼容性校验，不授予观察执行权限。
 
 `examples/` 中的样例用于 Fake 和合同测试；样例不包含真实设备、个人图像或账号数据。

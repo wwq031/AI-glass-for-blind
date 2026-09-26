@@ -3,9 +3,15 @@ import toolManifest from "../../providers/registry/tool-registry.json" with { ty
 import capabilityManifest from "../../contracts/capabilities/registry.json" with { type: "json" };
 
 const toolExposure = new Map(toolManifest.tools.map((tool) => [tool.tool_id, tool.exposure]));
-const textReadingCapabilities = new Set(capabilityManifest.capabilities
-  .filter((capability) => capability.policy === "menu-summary")
-  .map((capability) => capability.id));
+
+export function isCapabilityCompatibleWithSkill(
+  capabilities: readonly { id: string; compatible_skills?: readonly string[] }[],
+  capabilityId: unknown,
+  skillId: string,
+): boolean {
+  return typeof capabilityId === "string" && capabilities.some((capability) =>
+    capability.id === capabilityId && capability.compatible_skills?.includes(skillId));
+}
 
 export type PlanValidation =
   | { ok: true }
@@ -68,7 +74,7 @@ export function validatePlan(
         return { ok: false, code: "policy_required", actionIndex };
       }
       if (action.skillId === "read_text" &&
-          !textReadingCapabilities.has(action.arguments.capability_id as string)) {
+          !isCapabilityCompatibleWithSkill(capabilityManifest.capabilities, action.arguments.capability_id, "read_text")) {
         return { ok: false, code: "policy_required", actionIndex };
       }
     }

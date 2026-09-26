@@ -26,6 +26,7 @@
       "version": "1.0",
       "provider": "vision-router",
       "policy": "menu-summary",
+      "compatible_skills": ["read_text"],
       "request_schema": "../schemas/observation-request.schema.json",
       "result_schema": "../schemas/observation-result.schema.json",
       "voice_templates": "voice/menu.json",

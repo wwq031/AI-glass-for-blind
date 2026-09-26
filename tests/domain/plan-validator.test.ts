@@ -1,9 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { validatePlan } from "../../packages/domain/agent/plan-validator.ts";
+import { isCapabilityCompatibleWithSkill, validatePlan } from "../../packages/domain/agent/plan-validator.ts";
 import { SkillRegistry, type AgentPlan, type PlanAction } from "../../packages/domain/agent/types.ts";
 import { createP0SkillRegistry } from "../../packages/domain/skills/skill-registry.ts";
+import capabilityManifest from "../../packages/contracts/capabilities/registry.json" with { type: "json" };
 
 const registry = createP0SkillRegistry();
 const basePlan: AgentPlan = {
@@ -79,6 +80,21 @@ test("read_text rejects an unregistered or missing observation capability", () =
     assert.deepEqual(validatePlan(registry, plan(call("read_text", "observation.request", args)),
       { observationConsent: "explicit" }), { ok: false, code: "policy_required", actionIndex: 0 });
   }
+});
+
+test("registered text capability declares read_text compatibility", () => {
+  const menu = capabilityManifest.capabilities.find((capability) => capability.id === "vision.menu");
+  assert.deepEqual((menu as { compatible_skills?: string[] })?.compatible_skills, ["read_text"]);
+});
+
+test("a second registered text capability can be accepted without policy-name coupling", () => {
+  const capabilities = [
+    { id: "vision.menu", policy: "menu-summary", compatible_skills: ["read_text"] },
+    { id: "vision.ocr", policy: "ocr-policy-v2", compatible_skills: ["read_text"] },
+  ];
+  assert.equal(isCapabilityCompatibleWithSkill(capabilities, "vision.ocr", "read_text"), true);
+  assert.equal(isCapabilityCompatibleWithSkill(capabilities, "vision.ocr", "crossing_advisory"), false);
+  assert.equal(isCapabilityCompatibleWithSkill(capabilities, "vision.missing", "read_text"), false);
 });
 
 test("rejects more than four actions", () => {
