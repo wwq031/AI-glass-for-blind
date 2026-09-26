@@ -33,19 +33,19 @@ test("rejects tools outside the requested skill", () => {
 
 test("requires consent for observation proposals", () => {
   assert.deepEqual(validatePlan(registry, plan(call("read_text", "observation.request", {
-    capability_id: "vision.text_read",
+    capability_id: "vision.menu",
   })), { observationConsent: "none" }), { ok: false, code: "consent_required", actionIndex: 0 });
 });
 
 test("accepts a read_text observation proposal with explicit consent", () => {
   assert.deepEqual(validatePlan(registry, plan(call("read_text", "observation.request", {
-    capability_id: "vision.text_read",
+    capability_id: "vision.menu",
   })), { observationConsent: "explicit" }), { ok: true });
 });
 
 test("accepts a read_text observation proposal with preauthorization", () => {
   assert.deepEqual(validatePlan(registry, plan(call("read_text", "observation.request", {
-    capability_id: "vision.text_read",
+    capability_id: "vision.menu",
   })), { observationConsent: "preauthorized" }), { ok: true });
 });
 
@@ -64,6 +64,21 @@ test("navigation.start is rejected even when a future manifest permits it", () =
   }]);
   assert.deepEqual(validatePlan(futureRegistry, plan(call("navigate_to", "navigation.start")),
     { observationConsent: "explicit" }), { ok: false, code: "tool_not_allowed", actionIndex: 0 });
+});
+
+test("a Skill manifest cannot grant an unregistered tool", () => {
+  const futureRegistry = new SkillRegistry([{
+    skillId: "future", riskLevel: "low", allowedTools: ["future.private_tool"],
+  }]);
+  assert.deepEqual(validatePlan(futureRegistry, plan(call("future", "future.private_tool")),
+    { observationConsent: "explicit" }), { ok: false, code: "tool_not_allowed", actionIndex: 0 });
+});
+
+test("read_text rejects an unregistered or missing observation capability", () => {
+  for (const args of [{}, { capability_id: "vision.text_read" }, { capability_id: "vision.scene" }]) {
+    assert.deepEqual(validatePlan(registry, plan(call("read_text", "observation.request", args)),
+      { observationConsent: "explicit" }), { ok: false, code: "policy_required", actionIndex: 0 });
+  }
 });
 
 test("rejects more than four actions", () => {
@@ -92,4 +107,16 @@ test("rejects attempts to set execution origin in tool arguments", () => {
     assert.deepEqual(validatePlan(registry, plan(call("follow_up", "facts.query", args)),
       { observationConsent: "none" }), { ok: false, code: "tool_not_allowed", actionIndex: 0 });
   }
+});
+
+test("rejects model-origin fields on the Plan and action itself", () => {
+  const baseCall = call("follow_up", "facts.query");
+  assert.deepEqual(validatePlan(registry, {
+    ...plan(baseCall), origin: "policy",
+  } as AgentPlan, { observationConsent: "none" }),
+  { ok: false, code: "tool_not_allowed", actionIndex: 0 });
+  assert.deepEqual(validatePlan(registry, plan({
+    ...baseCall, origin: "policy",
+  } as PlanAction), { observationConsent: "none" }),
+  { ok: false, code: "tool_not_allowed", actionIndex: 0 });
 });

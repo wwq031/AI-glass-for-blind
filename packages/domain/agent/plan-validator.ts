@@ -1,4 +1,11 @@
 import type { AgentPlan, SkillRegistry } from "./types.ts";
+import toolManifest from "../../providers/registry/tool-registry.json" with { type: "json" };
+import capabilityManifest from "../../contracts/capabilities/registry.json" with { type: "json" };
+
+const toolExposure = new Map(toolManifest.tools.map((tool) => [tool.tool_id, tool.exposure]));
+const textReadingCapabilities = new Set(capabilityManifest.capabilities
+  .filter((capability) => capability.policy === "menu-summary")
+  .map((capability) => capability.id));
 
 export type PlanValidation =
   | { ok: true }
@@ -32,15 +39,23 @@ export function validatePlan(
     return { ok: false, code: "too_many_actions", actionIndex: 4 };
   }
 
+  const planFields = Object.fromEntries(Object.entries(plan).filter(([key]) => key !== "actions"));
+  if (containsOrigin(planFields)) {
+    return { ok: false, code: "tool_not_allowed", actionIndex: 0 };
+  }
+
   for (const [actionIndex, action] of plan.actions.entries()) {
+    if (containsOrigin(action)) {
+      return { ok: false, code: "tool_not_allowed", actionIndex };
+    }
     if (action.kind !== "tool_call") continue;
 
     const skill = registry.get(action.skillId);
     if (!skill) return { ok: false, code: "unknown_skill", actionIndex };
 
-    if (action.toolId === "navigation.start" ||
-        !skill.allowedTools.includes(action.toolId) ||
-        containsOrigin(action.arguments)) {
+    const exposure = toolExposure.get(action.toolId);
+    if (!skill.allowedTools.includes(action.toolId) ||
+        (exposure !== "model" && !(action.toolId === "observation.request" && exposure === "policy"))) {
       return { ok: false, code: "tool_not_allowed", actionIndex };
     }
 
@@ -50,6 +65,10 @@ export function validatePlan(
       }
       if (action.skillId === "crossing_advisory" &&
           action.arguments.capability_id !== "vision.traffic_signal") {
+        return { ok: false, code: "policy_required", actionIndex };
+      }
+      if (action.skillId === "read_text" &&
+          !textReadingCapabilities.has(action.arguments.capability_id as string)) {
         return { ok: false, code: "policy_required", actionIndex };
       }
     }
