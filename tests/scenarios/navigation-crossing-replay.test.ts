@@ -148,17 +148,47 @@ test("wait-only crossing plan closes context and route progress retires rejected
   assert.equal(progressed.effects[0]?.payload.text, "路线继续。");
 });
 
-test("authoritative route progress retires a pending crossing plan rejection", async () => {
+test("route progress retires unresolved crossing only with policy stop and requires a new-sequence resubmission", async () => {
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "speak", text: "可以过。", priority: "high" }]),
-    plan("nav-3", [{ kind: "speak", text: "已经抵达。", priority: "normal" }]),
+    plan("nav-4", [{ kind: "speak", text: "已经抵达。", priority: "normal" }]),
   ]);
   const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([]), skills: createP0SkillRegistry(), now });
   const rejected = await core.handle(nav("navigation.intersection_approaching", 2));
   assert.equal(rejected.followUpEvents?.[0]?.type, "plan.rejected");
-  const arrival = await core.handle(nav("navigation.arrived", 3));
+  const retired = await core.handle(nav("navigation.arrived", 3));
+  assert.equal(retired.rejection?.code, "crossing_context_retired");
+  assert.equal(retired.effects[0]?.payload.action, "cannot_determine");
+  assert.match(String(retired.effects[0]?.payload.text), /请先停下/);
+  assert.equal(agent.inputs.length, 1);
+  const stale = await core.handle(nav("navigation.arrived", 3));
+  assert.equal(stale.rejection?.code, "stale_event");
+  const arrival = await core.handle(nav("navigation.arrived", 4));
   assert.equal(arrival.effects[0]?.payload.text, "已经抵达。");
   assert.equal(agent.inputs.length, 2);
+});
+
+test("route progress cannot discard pending crossing ToolResult or elicit model crossing speech", async () => {
+  const agent = new RecordedLlmAgent([
+    plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-4", [{ kind: "speak", text: "导航继续。", priority: "normal" }]),
+  ]);
+  const tools = new RecordedToolGateway([{ callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+    status: "partial", completedAt: at, output: {}, facts: [{ name: "traffic_signal.state", value: "unknown", confidence: "low", validUntil: "2026-09-22T10:00:15.000Z" }] }]);
+  const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+  const requested = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  const competing = await core.handle(nav("navigation.approaching_maneuver", 3));
+  assert.equal(competing.rejection?.code, "pending_feedback");
+  assert.equal(competing.effects[0]?.payload.action, "cannot_determine");
+  assert.equal(agent.inputs.length, 1);
+  const advisory = await core.handle(requested.followUpEvents![0]!);
+  assert.equal(advisory.effects[0]?.payload.action, "cannot_determine");
+  assert.equal(core.snapshot("walk-1").lastSequence, 3);
+  const stale = await core.handle(nav("navigation.approaching_maneuver", 3));
+  assert.equal(stale.rejection?.code, "stale_event");
+  const resumed = await core.handle(nav("navigation.approaching_maneuver", 4));
+  assert.equal(resumed.effects[0]?.payload.text, "导航继续。");
 });
 
 test("crossing Skill request guards speech even without navigation or crossing words", async () => {

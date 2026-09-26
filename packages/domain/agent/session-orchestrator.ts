@@ -13,7 +13,7 @@ export interface AgentHandleOutput {
   /** Caller may explicitly submit these as the next Event; no automatic LLM loop. */
   followUpEvents?: AgentEvent[];
   rejection?: {
-    code: "stale_event" | "pending_feedback" | "invalid_feedback" | "interrupted" | Exclude<PlanValidation, { ok: true }>["code"];
+    code: "stale_event" | "pending_feedback" | "invalid_feedback" | "interrupted" | "crossing_context_retired" | Exclude<PlanValidation, { ok: true }>["code"];
     actionIndex?: number;
   };
 }
@@ -51,6 +51,10 @@ export class SessionOrchestrator {
    * Feed followUpEvents back explicitly. While feedback is pending, an unrelated Event is
    * rejected with pending_feedback; submit it again with a new sequence after feedback.
    * The pending Event's stored payload is authoritative, never the caller's copy.
+   * Route progress cannot replace a pending crossing ToolResult. It receives pending_feedback
+   * and a conservative stop reminder; submit canonical feedback, then route progress with a
+   * new sequence. With no pending crossing result, route progress retires the context with
+   * crossing_context_retired and a policy reminder; resubmit it with a new sequence.
    * user.cancel, user.help_requested, device.disconnected, and a user speech Event
    * with payload.intent_hint=cancel always preempt pending feedback. No contact is made.
    */
@@ -65,9 +69,14 @@ export class SessionOrchestrator {
       return { effects: [], results: [], rejection: { code: "stale_event" } };
     }
     if (session.crossingPending && this.isRouteProgress(event)) {
-      session.crossingPending = false;
-      session.pendingCrossingCallId = undefined;
-      session.pendingFeedback = undefined;
+      if (session.pendingCrossingCallId) {
+        // The canonical ToolResult owns the next sequence. Submit it first, then resubmit
+        // this route Event with a sequence newer than the consumed feedback.
+        return { effects: [this.unconfirmedCrossingEffect(event)], results: [], rejection: { code: "pending_feedback" } };
+      }
+      // No observation is pending: retire this crossing conservatively. The route Event is
+      // consumed without model planning; the caller may resubmit it at a fresh sequence.
+      return this.finishUnconfirmedCrossing(event, session, { code: "crossing_context_retired" });
     }
     const pending = session.pendingFeedback;
     if (pending && !this.matchesPendingFeedback(event, pending)) {
@@ -237,15 +246,19 @@ export class SessionOrchestrator {
   private finishUnconfirmedCrossing(
     event: AgentEvent, session: SessionRecord, rejection?: AgentHandleOutput["rejection"],
   ): AgentHandleOutput {
-    const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
-    const advisory = adviseCrossing({ now: createdAt });
     session.view.lastSequence = event.sequence;
     session.crossingPending = false;
     session.pendingCrossingCallId = undefined;
     session.pendingFeedback = undefined;
-    return { effects: [{ effectId: `${event.eventId}:crossing-unconfirmed`, sessionId: event.sessionId,
-      type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } }],
+    return { effects: [this.unconfirmedCrossingEffect(event)],
       results: [], ...(rejection ? { rejection } : {}) };
+  }
+
+  private unconfirmedCrossingEffect(event: AgentEvent): Effect {
+    const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
+    const advisory = adviseCrossing({ now: createdAt });
+    return { effectId: `${event.eventId}:crossing-unconfirmed`, sessionId: event.sessionId,
+      type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } };
   }
 
   private matchesPendingFeedback(event: AgentEvent, pending: AgentEvent): boolean {
