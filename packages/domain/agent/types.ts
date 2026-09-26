@@ -49,18 +49,18 @@ export interface SkillDefinition {
 }
 
 export class SkillRegistry {
-  private readonly skills: SkillDefinition[];
+  private readonly byId: ReadonlyMap<string, SkillDefinition>;
 
-  constructor(skills: SkillDefinition[]) {
-    this.skills = [...skills];
+  constructor(skills: readonly SkillDefinition[]) {
+    this.byId = new Map(skills.map((skill) => [skill.skillId, skill]));
   }
 
   get(skillId: string): SkillDefinition | undefined {
-    return this.skills.find((skill) => skill.skillId === skillId);
+    return this.byId.get(skillId);
   }
 
   list(): SkillDefinition[] {
-    return [...this.skills];
+    return [...this.byId.values()];
   }
 }
 
