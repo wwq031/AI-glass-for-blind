@@ -1,4 +1,6 @@
 import { buildAgentTurnInput } from "./context-builder.ts";
+import { skillContextFromNavigationEvent } from "./navigation-trigger.ts";
+import { adviseCrossingFromResult } from "../policies/crossing-advisory.ts";
 import type { LlmAgent, AgentSessionView } from "./llm-agent.ts";
 import { validatePlan, type ExecutionPermissions, type PlanValidation } from "./plan-validator.ts";
 import { TaskRunner } from "./task-runner.ts";
@@ -19,6 +21,7 @@ export interface AgentHandleOutput {
 interface SessionRecord {
   view: AgentSessionView;
   pendingFeedback?: AgentEvent;
+  pendingCrossingCallId?: string;
   epoch: number;
 }
 
@@ -68,15 +71,31 @@ export class SessionOrchestrator {
     if (!pending && this.isFeedback(event)) {
       return { effects: [], results: [], rejection: { code: "invalid_feedback" } };
     }
+    if (pending && session.pendingCrossingCallId && pending.type === "tool.results") {
+      const results = pending.payload.results;
+      const result = Array.isArray(results) ? results.find((item): item is ToolResult =>
+        typeof item === "object" && item !== null && "callId" in item && item.callId === session.pendingCrossingCallId) : undefined;
+      const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
+      const advisory = result ? adviseCrossingFromResult(result, createdAt) : adviseCrossingFromResult({
+        callId: session.pendingCrossingCallId, sessionId: event.sessionId, toolId: "observation.request",
+        status: "failed", completedAt: createdAt, output: {}, facts: [],
+      }, createdAt);
+      session.view.lastSequence = pending.sequence;
+      session.pendingFeedback = undefined;
+      session.pendingCrossingCallId = undefined;
+      return { effects: [{ effectId: `${pending.eventId}:crossing-advisory`, sessionId: event.sessionId,
+        type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } }], results: [] };
+    }
     this.processing.add(event.sessionId);
     const epoch = session.epoch;
     try {
       const canonicalEvent = pending ? structuredClone(pending) : event;
+      const navigationContext = skillContextFromNavigationEvent(canonicalEvent);
       const input = buildAgentTurnInput({
-        event: canonicalEvent, session: session.view, skills: this.options.skills.list(),
+        event: canonicalEvent, session: { ...session.view, ...(navigationContext.navigation ? { navigation: navigationContext.navigation } : {}) }, skills: this.options.skills.list(),
         recentResults: canonicalEvent.type === "tool.results" && Array.isArray(canonicalEvent.payload.results)
           ? canonicalEvent.payload.results : [],
-      });
+      }, navigationContext.urgentSkillId);
       const plan = await this.options.agent.plan(input);
       if (session.epoch !== epoch) return { effects: [], results: [], rejection: { code: "interrupted" } };
       const validation = validatePlan(this.options.skills, plan, permissions);
@@ -96,8 +115,14 @@ export class SessionOrchestrator {
       }
       if (output.results.length === 0) {
         session.pendingFeedback = undefined;
+        session.pendingCrossingCallId = undefined;
         return output;
       }
+      const crossingIndex = plan.actions.findIndex((action) =>
+        action.kind === "tool_call" && action.skillId === "crossing_advisory" && action.toolId === "observation.request" &&
+        action.arguments.capability_id === "vision.traffic_signal");
+      // If a gateway returns malformed or mismatched feedback, the expected call is absent and policy fails closed.
+      session.pendingCrossingCallId = crossingIndex < 0 ? undefined : `${plan.planId}:${crossingIndex}`;
       const feedback: AgentEvent = {
         eventId: `${plan.planId}:results`, sessionId: canonicalEvent.sessionId,
         sequence: canonicalEvent.sequence + 1, source: "provider", type: "tool.results",
@@ -128,6 +153,7 @@ export class SessionOrchestrator {
     session.view.lastSequence = event.sequence;
     session.view.activePlanId = undefined;
     session.pendingFeedback = undefined;
+    session.pendingCrossingCallId = undefined;
     const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
     const effects: Effect[] = [{
       effectId: `${event.eventId}:session`, sessionId: event.sessionId,

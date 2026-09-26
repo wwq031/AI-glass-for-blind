@@ -7,6 +7,7 @@ export interface AgentSessionView {
   activePlanId?: string;
   activeSkills: string[];
   urgentSkillId?: string;
+  navigation?: { intersectionId?: string; distanceM?: number; travelHeadingDeg?: number };
   pendingQuestion?: string;
 }
 
