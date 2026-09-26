@@ -18,6 +18,18 @@ test("crossing policy gives only cautious advice from fresh aligned green eviden
 test("red or approaching vehicle requires waiting", () => {
   assert.equal(adviseCrossing({ ...certain, trafficSignal: "red" }).action, "wait");
   assert.equal(adviseCrossing({ ...certain, vehicleApproaching: "yes" }).action, "wait");
+  assert.equal(adviseCrossing({ ...certain, trafficSignal: "red", vehicleApproaching: "unknown" }).action, "wait");
+  assert.equal(adviseCrossing({ ...certain, trafficSignal: "unknown", vehicleApproaching: "yes" }).action, "wait");
+});
+
+test("partial observation never yields proceed advice even with positive facts", () => {
+  const result = { callId: "c1", sessionId: "s1", toolId: "observation.request", status: "partial" as const,
+    completedAt: now, output: {}, facts: [
+      { name: "traffic_signal.state", value: "green", confidence: "high" as const, validUntil },
+      { name: "traffic_signal.direction_match", value: "yes", confidence: "high" as const, validUntil },
+      { name: "vehicle.activity", value: "no", confidence: "high" as const, validUntil },
+    ] };
+  assert.notEqual(adviseCrossingFromResult(result, now).action, "proceed_with_caution");
 });
 
 test("unknown, missing, expired, or direction mismatch fails closed", () => {

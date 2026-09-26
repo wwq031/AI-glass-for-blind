@@ -22,6 +22,7 @@ interface SessionRecord {
   view: AgentSessionView;
   pendingFeedback?: AgentEvent;
   pendingCrossingCallId?: string;
+  crossingPending?: boolean;
   epoch: number;
 }
 
@@ -83,6 +84,7 @@ export class SessionOrchestrator {
       session.view.lastSequence = pending.sequence;
       session.pendingFeedback = undefined;
       session.pendingCrossingCallId = undefined;
+      session.crossingPending = false;
       return { effects: [{ effectId: `${pending.eventId}:crossing-advisory`, sessionId: event.sessionId,
         type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } }], results: [] };
     }
@@ -91,6 +93,7 @@ export class SessionOrchestrator {
     try {
       const canonicalEvent = pending ? structuredClone(pending) : event;
       const navigationContext = skillContextFromNavigationEvent(canonicalEvent);
+      if (navigationContext.urgentSkillId) session.crossingPending = true;
       const input = buildAgentTurnInput({
         event: canonicalEvent, session: { ...session.view, ...(navigationContext.navigation ? { navigation: navigationContext.navigation } : {}) }, skills: this.options.skills.list(),
         recentResults: canonicalEvent.type === "tool.results" && Array.isArray(canonicalEvent.payload.results)
@@ -104,6 +107,15 @@ export class SessionOrchestrator {
       }
       if (plan.sessionId !== canonicalEvent.sessionId || plan.eventId !== canonicalEvent.eventId || !plan.planId) {
         return this.rejectPlan(canonicalEvent, session, { code: "policy_required" });
+      }
+      if (session.crossingPending && plan.actions.some((action) =>
+        action.kind === "speak" || action.kind === "complete" ||
+        (action.kind === "tool_call" && action.toolId === "speech.ask_user"))) {
+        const rejected = this.rejectPlan(canonicalEvent, session, { code: "policy_required" });
+        const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
+        rejected.effects.push({ effectId: `${canonicalEvent.eventId}:crossing-reminder`, sessionId: canonicalEvent.sessionId,
+          type: "speech", createdAt, payload: { text: "请先停下。路口情况尚未确认，需要观察结果后才能提供辅助提示。", priority: "critical" } });
+        return rejected;
       }
       // Commit before tool execution: a thrown gateway may already have caused an external side effect.
       session.view.lastSequence = canonicalEvent.sequence;
@@ -154,6 +166,7 @@ export class SessionOrchestrator {
     session.view.activePlanId = undefined;
     session.pendingFeedback = undefined;
     session.pendingCrossingCallId = undefined;
+    session.crossingPending = false;
     const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
     const effects: Effect[] = [{
       effectId: `${event.eventId}:session`, sessionId: event.sessionId,

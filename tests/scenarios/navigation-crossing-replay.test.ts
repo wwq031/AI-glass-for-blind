@@ -69,3 +69,32 @@ test("failed crossing observation produces conservative speech without model imp
   assert.match(String(advice.effects[0]?.payload.text), /请先停下/);
   assert.equal(agent.inputs.length, 1);
 });
+
+test("crossing context rejects model speech and completion before observation", async () => {
+  const agent = new RecordedLlmAgent([plan("nav-2", [
+    { kind: "speak", text: "绿灯，可以过。", priority: "critical" },
+    { kind: "complete", reason: "已过街" },
+  ])]);
+  const tools = new RecordedToolGateway([]);
+  const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+  const out = await core.handle(nav("navigation.crosswalk_approaching", 2));
+  assert.equal(out.rejection?.code, "policy_required");
+  assert.equal(out.effects.length, 1);
+  assert.notEqual(out.effects[0]?.payload.text, "绿灯，可以过。");
+  assert.match(String(out.effects[0]?.payload.text), /请先停下/);
+  assert.deepEqual(tools.calls, []);
+});
+
+test("crossing context rejects pre-result model speech even when observation is also planned", async () => {
+  const agent = new RecordedLlmAgent([plan("nav-2", [
+    { kind: "speak", text: "现在可以过马路。", priority: "critical" },
+    { kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } },
+  ])]);
+  const tools = new RecordedToolGateway([]);
+  const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+  const out = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  assert.equal(out.rejection?.code, "policy_required");
+  assert.equal(out.effects.length, 1);
+  assert.notEqual(out.effects[0]?.payload.text, "现在可以过马路。");
+  assert.deepEqual(tools.calls, []);
+});
