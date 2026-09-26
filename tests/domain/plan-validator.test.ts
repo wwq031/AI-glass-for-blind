@@ -84,6 +84,19 @@ test("ordinary scene inspection cannot request the crossing-only traffic signal 
   })), { observationConsent: "explicit" }), { ok: true });
 });
 
+test("generic observation requires a registered capability ID", () => {
+  for (const skillId of ["inspect_scene", "find_target"]) {
+    for (const args of [{}, { capability_id: "vision.unregistered" }, { capability_id: 7 }]) {
+      assert.deepEqual(validatePlan(registry, plan(call(skillId, "observation.request", args)),
+        { observationConsent: "explicit" }),
+      { ok: false, code: "policy_required", actionIndex: 0 });
+    }
+  }
+  assert.deepEqual(validatePlan(registry, plan(call("inspect_scene", "observation.request", {
+    capability_id: "vision.entrance",
+  })), { observationConsent: "explicit" }), { ok: true });
+});
+
 test("traffic signal remains crossing-only when the registry omits crossing_advisory", () => {
   const ordinaryOnly = new SkillRegistry([{
     skillId: "inspect_scene", riskLevel: "low", allowedTools: ["observation.request"],
