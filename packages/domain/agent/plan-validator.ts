@@ -33,22 +33,31 @@ function isNonemptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
 }
 
+function hasOnlyFields(value: Record<string, unknown>, allowed: readonly string[]): boolean {
+  return Object.keys(value).every((key) => allowed.includes(key));
+}
+
 function isValidAction(action: unknown): boolean {
   if (!isRecord(action)) return false;
 
   switch (action.kind) {
     case "tool_call":
       return isNonemptyString(action.skillId) && isNonemptyString(action.toolId) &&
-        isRecord(action.arguments);
+        /^[a-z][a-z0-9_]*$/.test(action.skillId) &&
+        /^[a-z][a-z0-9]*(\.[a-z0-9_-]+)+$/.test(action.toolId) &&
+        isRecord(action.arguments) &&
+        hasOnlyFields(action, ["kind", "skillId", "toolId", "arguments"]);
     case "speak":
       return isNonemptyString(action.text) &&
-        ["critical", "high", "normal", "detail"].includes(action.priority as string);
+        ["critical", "high", "normal", "detail"].includes(action.priority as string) &&
+        hasOnlyFields(action, ["kind", "text", "priority"]);
     case "wait":
       return Array.isArray(action.eventTypes) && action.eventTypes.length > 0 &&
         action.eventTypes.every(isNonemptyString) &&
-        new Set(action.eventTypes).size === action.eventTypes.length;
+        new Set(action.eventTypes).size === action.eventTypes.length &&
+        hasOnlyFields(action, ["kind", "eventTypes"]);
     case "complete":
-      return isNonemptyString(action.reason);
+      return isNonemptyString(action.reason) && hasOnlyFields(action, ["kind", "reason"]);
     default:
       return false;
   }
@@ -74,6 +83,7 @@ export function validatePlan(
       !isNonemptyString(plan.planId) || !isNonemptyString(plan.sessionId) ||
       !isNonemptyString(plan.eventId) || !isNonemptyString(plan.goal) ||
       !isNonemptyString(plan.createdAt) ||
+      Number.isNaN(Date.parse(plan.createdAt)) ||
       (plan.responseDraft !== undefined && typeof plan.responseDraft !== "string")) {
     return { ok: false, code: "invalid_plan", actionIndex: 0 };
   }
@@ -86,13 +96,16 @@ export function validatePlan(
   if (containsOrigin(planFields)) {
     return { ok: false, code: "tool_not_allowed", actionIndex: 0 };
   }
+  if (!hasOnlyFields(plan, ["planId", "sessionId", "eventId", "goal", "actions", "responseDraft", "createdAt"])) {
+    return { ok: false, code: "invalid_plan", actionIndex: 0 };
+  }
 
   for (const [actionIndex, action] of plan.actions.entries()) {
-    if (!isValidAction(action)) {
-      return { ok: false, code: "invalid_plan", actionIndex };
-    }
     if (containsOrigin(action)) {
       return { ok: false, code: "tool_not_allowed", actionIndex };
+    }
+    if (!isValidAction(action)) {
+      return { ok: false, code: "invalid_plan", actionIndex };
     }
     if (action.kind !== "tool_call") continue;
 
@@ -106,7 +119,8 @@ export function validatePlan(
     }
 
     if (action.toolId === "observation.request") {
-      if (permissions.observationConsent === "none") {
+      if (permissions?.observationConsent !== "explicit" &&
+          permissions?.observationConsent !== "preauthorized") {
         return { ok: false, code: "consent_required", actionIndex };
       }
       if (action.skillId === "crossing_advisory" &&

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isCapabilityCompatibleWithSkill, validatePlan } from "../../packages/domain/agent/plan-validator.ts";
+import { isCapabilityCompatibleWithSkill, validatePlan, type ExecutionPermissions } from "../../packages/domain/agent/plan-validator.ts";
 import { SkillRegistry, type AgentPlan, type PlanAction } from "../../packages/domain/agent/types.ts";
 import { createP0SkillRegistry } from "../../packages/domain/skills/skill-registry.ts";
 import capabilityManifest from "../../packages/contracts/capabilities/registry.json" with { type: "json" };
@@ -166,5 +166,41 @@ test("malformed fields in each supported action fail closed", () => {
   ]) {
     assert.deepEqual(validatePlan(registry, { ...basePlan, actions: [malformed] } as AgentPlan,
       { observationConsent: "explicit" }), { ok: false, code: "invalid_plan", actionIndex: 0 });
+  }
+});
+
+test("observation consent must be exactly explicit or preauthorized", () => {
+  const observation = plan(call("read_text", "observation.request", { capability_id: "vision.menu" }));
+  for (const permissions of [
+    {}, { observationConsent: "bogus" }, { observationConsent: null }, null,
+  ]) {
+    const result = validatePlan(registry, observation, permissions as ExecutionPermissions);
+    assert.deepEqual(result, { ok: false, code: "consent_required", actionIndex: 0 });
+  }
+});
+
+test("malformed plan identity and unexpected fields fail closed", () => {
+  for (const fields of [
+    { planId: "" }, { sessionId: null }, { eventId: 7 },
+    { goal: "" }, { createdAt: "not-a-date" }, { responseDraft: 42 },
+    { unexpected: true },
+  ]) {
+    assert.deepEqual(validatePlan(registry, { ...basePlan, ...fields } as AgentPlan,
+      { observationConsent: "none" }), { ok: false, code: "invalid_plan", actionIndex: 0 });
+  }
+});
+
+test("malformed tool and effect action fields fail closed", () => {
+  for (const malformed of [
+    { kind: "tool_call", skillId: "bad skill", toolId: "facts.query", arguments: {} },
+    { kind: "tool_call", skillId: "follow_up", toolId: "not-a-tool-id", arguments: {} },
+    { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: [] },
+    { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {}, extra: true },
+    { kind: "speak", text: "hello", priority: "normal", extra: true },
+    { kind: "wait", eventTypes: ["ready", "ready"] },
+    { kind: "complete", reason: "done", extra: true },
+  ]) {
+    assert.deepEqual(validatePlan(registry, { ...basePlan, actions: [malformed] } as AgentPlan,
+      { observationConsent: "none" }), { ok: false, code: "invalid_plan", actionIndex: 0 });
   }
 });
