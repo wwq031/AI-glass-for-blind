@@ -83,6 +83,8 @@ export interface ToolResult {
     confidence: "high" | "medium" | "low" | "unknown";
     validUntil?: string;
   }>;
+  events?: Array<{ type: string; payload?: Record<string, unknown> }>;
+  error?: { code: string; message: string; retryable: boolean; [key: string]: unknown };
 }
 
 export interface Effect {

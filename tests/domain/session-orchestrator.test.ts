@@ -84,7 +84,51 @@ test("tool calls run sequentially; returns only recorded ToolResults", async () 
   assert.deepEqual(output.results, results);
   assert.deepEqual(tools.calls.map((call) => call.origin), ["agent", "agent"]);
   assert.deepEqual(tools.calls.map((call) => call.arguments), [{ names: ["a"] }, { names: ["b"] }]);
-  assert.deepEqual(output.effects.map((effect) => effect.type), ["session"]);
+  assert.deepEqual(output.effects, []);
+  assert.deepEqual(output.followUpEvents?.map((event) => event.sequence), [2]);
+  assert.deepEqual(output.followUpEvents?.[0]?.payload.results, results);
+});
+
+test("ToolResult becomes an explicit follow-up Event that the LLM can interpret", async () => {
+  const result: ToolResult = {
+    callId: "call-1", sessionId: "s-1", toolId: "facts.query", status: "succeeded", completedAt: now(),
+    output: { answer: "入口在左侧" }, facts: [],
+  };
+  const { core, agent } = orchestrator([
+    plan([
+      { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {} },
+      { kind: "speak", text: "未核实的预写回答", priority: "normal" },
+    ]),
+    plan([{ kind: "speak", text: "入口在左侧", priority: "normal" }], "p-1:results"),
+  ], new RecordedToolGateway([result]));
+  const first = await core.handle(event());
+  assert.deepEqual(first.effects, []);
+  assert.equal(first.followUpEvents?.length, 1);
+  const followUp = first.followUpEvents![0]!;
+  assert.equal(followUp.source, "provider");
+  assert.equal(followUp.type, "tool.results");
+  assert.deepEqual(followUp.payload.results, [result]);
+  const second = await core.handle(followUp);
+  assert.equal(second.effects[0]?.payload.text, "入口在左侧");
+  assert.equal(agent.inputs[1]?.event.eventId, followUp.eventId);
+});
+
+test("failed ToolResult stops later tool calls and prevents pre-result speech or completion", async () => {
+  const tools = new RecordedToolGateway([{
+    callId: "failed", sessionId: "s-1", toolId: "facts.query", status: "failed", completedAt: now(),
+    output: {}, facts: [], error: { code: "unknown", message: "provider failed", retryable: true },
+  }]);
+  const { core } = orchestrator([plan([
+    { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {} },
+    { kind: "speak", text: "已经查到", priority: "normal" },
+    { kind: "complete", reason: "done" },
+    { kind: "tool_call", skillId: "follow_up", toolId: "facts.query", arguments: {} },
+  ])], tools);
+  const output = await core.handle(event());
+  assert.equal(output.results[0]?.status, "failed");
+  assert.deepEqual(output.effects, []);
+  assert.equal(output.followUpEvents?.length, 1);
+  assert.equal(tools.calls.length, 1);
 });
 
 test("consented observation is executed as policy origin, not a model-set origin", async () => {
@@ -115,6 +159,16 @@ test("TaskRunner does not elevate an observation without consent", async () => {
   assert.deepEqual(tools.calls, []);
 });
 
+test("TaskRunner rejects a malformed consent value on its public run path", async () => {
+  const tools = new RecordedToolGateway([]);
+  const runner = new TaskRunner({ tools, now });
+  await assert.rejects(() => runner.run(plan([{
+    kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+    arguments: { capability_id: "vision.traffic_signal" },
+  }]), { observationConsent: "bogus" } as never), /consent/i);
+  assert.deepEqual(tools.calls, []);
+});
+
 test("concrete adapter preserves origin and consent in ToolCall", async () => {
   let handledOrigin: string | undefined;
   let handledConsent: string | undefined;
@@ -127,7 +181,10 @@ test("concrete adapter preserves origin and consent in ToolCall", async () => {
     handlers: new Map([["observation.request", async (call) => {
       handledOrigin = call.origin;
       handledConsent = call.consent;
-      return { facts: [{ name: "traffic_signal.state", value: "unknown", confidence: "low" as const }] };
+      return {
+        events: [{ type: "capture.requested", payload: { request_id: "r-1" } }],
+        facts: [{ name: "traffic_signal.state", value: "unknown", confidence: "low" as const }],
+      };
     }]]),
     validateArguments: () => ({ valid: true }),
     now: () => new Date(now()),
@@ -138,11 +195,14 @@ test("concrete adapter preserves origin and consent in ToolCall", async () => {
   const result = await adapter.execute(input);
   assert.equal(result.status, "succeeded");
   assert.equal(result.facts[0]?.name, "traffic_signal.state");
+  assert.deepEqual(result.events, [{ type: "capture.requested", payload: { request_id: "r-1" } }]);
   assert.equal(handledOrigin, "policy");
   assert.equal(handledConsent, "explicit");
   assert.equal(concrete.auditLog[0]?.decision, "executed");
 
   const denied = await adapter.execute({ ...input, actionIndex: 1, origin: "agent" });
   assert.equal(denied.status, "denied");
+  assert.equal(denied.error?.code, "permission_denied");
+  assert.equal(denied.error?.retryable, false);
   assert.equal(concrete.auditLog[1]?.decision, "denied");
 });

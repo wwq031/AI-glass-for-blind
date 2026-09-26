@@ -52,6 +52,8 @@ export class ConcreteToolGatewayAdapter implements ToolGateway {
       facts: result.facts.map((fact) => ({
         name: fact.name, value: fact.value, confidence: fact.confidence, validUntil: fact.valid_until,
       })),
+      events: result.events,
+      ...(result.error ? { error: { ...result.error } } : {}),
     };
   }
 }

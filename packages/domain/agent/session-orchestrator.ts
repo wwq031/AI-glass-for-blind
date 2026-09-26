@@ -8,6 +8,8 @@ import type { AgentEvent, Effect, SkillRegistry, ToolResult } from "./types.ts";
 export interface AgentHandleOutput {
   effects: Effect[];
   results: ToolResult[];
+  /** Caller may explicitly submit these as the next Event; no automatic LLM loop. */
+  followUpEvents?: AgentEvent[];
   rejection?: {
     code: "stale_event" | Exclude<PlanValidation, { ok: true }>["code"];
     actionIndex?: number;
@@ -16,7 +18,6 @@ export interface AgentHandleOutput {
 
 interface SessionRecord {
   view: AgentSessionView;
-  recentResults: ToolResult[];
 }
 
 export class SessionOrchestrator {
@@ -48,7 +49,9 @@ export class SessionOrchestrator {
     this.processing.add(event.sessionId);
     try {
       const input = buildAgentTurnInput({
-        event, session: session.view, skills: this.options.skills.list(), recentResults: session.recentResults,
+        event, session: session.view, skills: this.options.skills.list(),
+        recentResults: event.type === "tool.results" && Array.isArray(event.payload.results)
+          ? event.payload.results : [],
       });
       const plan = await this.options.agent.plan(input);
       const validation = validatePlan(this.options.skills, plan, permissions);
@@ -62,8 +65,13 @@ export class SessionOrchestrator {
       session.view.lastSequence = event.sequence;
       session.view.activePlanId = plan.planId;
       session.view.goal = plan.goal;
-      session.recentResults = structuredClone(output.results);
-      return output;
+      if (output.results.length === 0) return output;
+      return { ...output, followUpEvents: [{
+        eventId: `${plan.planId}:results`, sessionId: event.sessionId,
+        sequence: event.sequence + 1, source: "provider", type: "tool.results",
+        occurredAt: (this.options.now ?? (() => new Date().toISOString()))(),
+        payload: { results: structuredClone(output.results) },
+      }] };
     } finally {
       this.processing.delete(event.sessionId);
     }
@@ -72,7 +80,7 @@ export class SessionOrchestrator {
   private getSession(sessionId: string): SessionRecord {
     let session = this.sessions.get(sessionId);
     if (!session) {
-      session = { view: { sessionId, lastSequence: 0, activeSkills: [] }, recentResults: [] };
+      session = { view: { sessionId, lastSequence: 0, activeSkills: [] } };
       this.sessions.set(sessionId, session);
     }
     return session;
