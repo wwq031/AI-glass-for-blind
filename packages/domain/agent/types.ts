@@ -42,17 +42,23 @@ export interface AgentPlan {
 }
 
 export interface SkillDefinition {
-  skillId: string;
-  riskLevel: "low" | "medium" | "high";
-  allowedTools: string[];
-  requiredPolicy?: string;
+  readonly skillId: string;
+  readonly riskLevel: "low" | "medium" | "high";
+  /** Overall skill dependencies; model-call permission also requires Tool exposure="model". */
+  readonly allowedTools: readonly string[];
+  readonly requiredPolicy?: string;
 }
 
 export class SkillRegistry {
   private readonly byId: ReadonlyMap<string, SkillDefinition>;
 
   constructor(skills: readonly SkillDefinition[]) {
-    this.byId = new Map(skills.map((skill) => [skill.skillId, skill]));
+    this.byId = new Map(
+      skills.map((skill) => [
+        skill.skillId,
+        Object.freeze({ ...skill, allowedTools: Object.freeze([...skill.allowedTools]) }),
+      ])
+    );
   }
 
   get(skillId: string): SkillDefinition | undefined {

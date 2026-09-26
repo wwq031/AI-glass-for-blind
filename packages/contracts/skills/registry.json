@@ -10,7 +10,7 @@
         "properties": { "target": { "type": "string", "minLength": 1 } },
         "additionalProperties": false
       },
-      "allowed_tools": ["navigation.search_destination", "navigation.confirm_destination", "navigation.start", "speech.ask_user"],
+      "allowed_tools": ["navigation.search_destination", "navigation.confirm_destination", "speech.ask_user"],
       "result_kinds": ["destination.candidates", "navigation.state"],
       "risk_level": "low"
     },
