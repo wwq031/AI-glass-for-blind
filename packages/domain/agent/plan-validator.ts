@@ -17,12 +17,41 @@ export type PlanValidation =
   | { ok: true }
   | {
       ok: false;
-      code: "unknown_skill" | "tool_not_allowed" | "consent_required" | "policy_required" | "too_many_actions";
+      code: "invalid_plan" | "unknown_skill" | "tool_not_allowed" | "consent_required" | "policy_required" | "too_many_actions";
       actionIndex: number;
     };
 
 export interface ExecutionPermissions {
   observationConsent: "none" | "explicit" | "preauthorized";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonemptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isValidAction(action: unknown): boolean {
+  if (!isRecord(action)) return false;
+
+  switch (action.kind) {
+    case "tool_call":
+      return isNonemptyString(action.skillId) && isNonemptyString(action.toolId) &&
+        isRecord(action.arguments);
+    case "speak":
+      return isNonemptyString(action.text) &&
+        ["critical", "high", "normal", "detail"].includes(action.priority as string);
+    case "wait":
+      return Array.isArray(action.eventTypes) && action.eventTypes.length > 0 &&
+        action.eventTypes.every(isNonemptyString) &&
+        new Set(action.eventTypes).size === action.eventTypes.length;
+    case "complete":
+      return isNonemptyString(action.reason);
+    default:
+      return false;
+  }
 }
 
 function containsOrigin(value: unknown, seen = new WeakSet<object>()): boolean {
@@ -41,6 +70,14 @@ export function validatePlan(
   plan: AgentPlan,
   permissions: ExecutionPermissions,
 ): PlanValidation {
+  if (!isRecord(plan) || !Array.isArray(plan.actions) ||
+      !isNonemptyString(plan.planId) || !isNonemptyString(plan.sessionId) ||
+      !isNonemptyString(plan.eventId) || !isNonemptyString(plan.goal) ||
+      !isNonemptyString(plan.createdAt) ||
+      (plan.responseDraft !== undefined && typeof plan.responseDraft !== "string")) {
+    return { ok: false, code: "invalid_plan", actionIndex: 0 };
+  }
+
   if (plan.actions.length > 4) {
     return { ok: false, code: "too_many_actions", actionIndex: 4 };
   }
@@ -51,6 +88,9 @@ export function validatePlan(
   }
 
   for (const [actionIndex, action] of plan.actions.entries()) {
+    if (!isValidAction(action)) {
+      return { ok: false, code: "invalid_plan", actionIndex };
+    }
     if (containsOrigin(action)) {
       return { ok: false, code: "tool_not_allowed", actionIndex };
     }

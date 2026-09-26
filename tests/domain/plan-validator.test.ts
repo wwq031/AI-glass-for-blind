@@ -136,3 +136,35 @@ test("rejects model-origin fields on the Plan and action itself", () => {
   } as PlanAction), { observationConsent: "none" }),
   { ok: false, code: "tool_not_allowed", actionIndex: 0 });
 });
+
+test("malformed root plans return invalid_plan without throwing", () => {
+  for (const malformed of [null, {}, { ...basePlan, actions: null }, { ...basePlan, actions: "speak" }]) {
+    assert.deepEqual(validatePlan(registry, malformed as AgentPlan, { observationConsent: "none" }),
+      { ok: false, code: "invalid_plan", actionIndex: 0 });
+  }
+});
+
+test("null and unknown action kinds fail closed at their index", () => {
+  for (const malformed of [null, { kind: "device_raw_command", command: "camera.capture" }]) {
+    assert.deepEqual(validatePlan(registry, {
+      ...basePlan,
+      actions: [{ kind: "speak", text: "ok", priority: "normal" }, malformed],
+    } as AgentPlan, { observationConsent: "none" }),
+    { ok: false, code: "invalid_plan", actionIndex: 1 });
+  }
+});
+
+test("malformed fields in each supported action fail closed", () => {
+  for (const malformed of [
+    { kind: "tool_call", skillId: "read_text", toolId: "observation.request", arguments: null },
+    { kind: "tool_call", skillId: "read_text", arguments: {} },
+    { kind: "speak", text: "", priority: "normal" },
+    { kind: "speak", text: "hello", priority: "urgent" },
+    { kind: "wait", eventTypes: null },
+    { kind: "wait", eventTypes: [] },
+    { kind: "complete" },
+  ]) {
+    assert.deepEqual(validatePlan(registry, { ...basePlan, actions: [malformed] } as AgentPlan,
+      { observationConsent: "explicit" }), { ok: false, code: "invalid_plan", actionIndex: 0 });
+  }
+});
