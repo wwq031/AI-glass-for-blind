@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isCapabilityCompatibleWithSkill, isPlanToolExposureAllowed, validatePlan, type ExecutionPermissions } from "../../packages/domain/agent/plan-validator.ts";
+import { isCapabilityCompatibleWithSkill, isPlanToolExposureAllowed, isSkillAllowedForCapability, validatePlan, type ExecutionPermissions } from "../../packages/domain/agent/plan-validator.ts";
 import { SkillRegistry, type AgentPlan, type PlanAction } from "../../packages/domain/agent/types.ts";
 import { createP0SkillRegistry } from "../../packages/domain/skills/skill-registry.ts";
 import capabilityManifest from "../../packages/contracts/capabilities/registry.json" with { type: "json" };
@@ -158,6 +158,13 @@ test("a second registered text capability can be accepted without policy-name co
   assert.equal(isCapabilityCompatibleWithSkill(capabilities, "vision.ocr", "read_text"), true);
   assert.equal(isCapabilityCompatibleWithSkill(capabilities, "vision.ocr", "crossing_advisory"), false);
   assert.equal(isCapabilityCompatibleWithSkill(capabilities, "vision.missing", "read_text"), false);
+});
+
+test("an explicit empty compatible_skills list denies every Skill", () => {
+  assert.equal(isSkillAllowedForCapability({ compatible_skills: [] }, "inspect_scene"), false);
+  assert.equal(isSkillAllowedForCapability({ compatible_skills: [] }, "read_text"), false);
+  assert.equal(isSkillAllowedForCapability({ compatible_skills: ["read_text"] }, "read_text"), true);
+  assert.equal(isSkillAllowedForCapability({}, "inspect_scene"), true);
 });
 
 test("rejects more than four actions", () => {

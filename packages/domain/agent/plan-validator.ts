@@ -18,6 +18,14 @@ export function isCapabilityCompatibleWithSkill(
     capability.id === capabilityId && capability.compatible_skills?.includes(skillId));
 }
 
+export function isSkillAllowedForCapability(
+  capability: { compatible_skills?: readonly string[] },
+  skillId: string,
+): boolean {
+  if (!Object.hasOwn(capability, "compatible_skills")) return true;
+  return Array.isArray(capability.compatible_skills) && capability.compatible_skills.includes(skillId);
+}
+
 export type PlanValidation =
   | { ok: true }
   | {
@@ -133,9 +141,7 @@ export function validatePlan(
         ({ id }) => id === action.arguments.capability_id,
       );
       if (!capability) return { ok: false, code: "policy_required", actionIndex };
-      const compatibleSkills = "compatible_skills" in capability ? capability.compatible_skills : undefined;
-      if (compatibleSkills && compatibleSkills.length > 0 &&
-          !compatibleSkills.includes(action.skillId)) {
+      if (!isSkillAllowedForCapability(capability, action.skillId)) {
         return { ok: false, code: "policy_required", actionIndex };
       }
 
