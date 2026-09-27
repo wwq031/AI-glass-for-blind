@@ -133,6 +133,11 @@ export function validatePlan(
         ({ id }) => id === action.arguments.capability_id,
       );
       if (!capability) return { ok: false, code: "policy_required", actionIndex };
+      const compatibleSkills = "compatible_skills" in capability ? capability.compatible_skills : undefined;
+      if (compatibleSkills && compatibleSkills.length > 0 &&
+          !compatibleSkills.includes(action.skillId)) {
+        return { ok: false, code: "policy_required", actionIndex };
+      }
 
       if (capability.id === "vision.traffic_signal" &&
           (action.skillId !== "crossing_advisory" || skill.requiredPolicy !== "crossing-advisory")) {

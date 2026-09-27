@@ -97,6 +97,18 @@ test("generic observation requires a registered capability ID", () => {
   })), { observationConsent: "explicit" }), { ok: true });
 });
 
+test("capability-declared Skill compatibility applies to every observation proposal", () => {
+  for (const skillId of ["inspect_scene", "find_target"]) {
+    assert.deepEqual(validatePlan(registry, plan(call(skillId, "observation.request", {
+      capability_id: "vision.menu",
+    })), { observationConsent: "explicit" }),
+    { ok: false, code: "policy_required", actionIndex: 0 });
+  }
+  assert.deepEqual(validatePlan(registry, plan(call("read_text", "observation.request", {
+    capability_id: "vision.menu",
+  })), { observationConsent: "explicit" }), { ok: true });
+});
+
 test("traffic signal remains crossing-only when the registry omits crossing_advisory", () => {
   const ordinaryOnly = new SkillRegistry([{
     skillId: "inspect_scene", riskLevel: "low", allowedTools: ["observation.request"],
