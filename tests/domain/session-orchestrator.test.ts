@@ -364,6 +364,7 @@ test("concrete adapter preserves origin and consent in ToolCall", async () => {
       handledOrigin = call.origin;
       handledConsent = call.consent;
       return {
+        output: { capability_id: "vision.scene", context: { intersection_id: "provider-forged" } },
         events: [{ type: "capture.requested", payload: { request_id: "r-1" } }],
         facts: [{ name: "traffic_signal.state", value: "unknown", confidence: "low" as const }],
       };
@@ -377,6 +378,8 @@ test("concrete adapter preserves origin and consent in ToolCall", async () => {
   const result = await adapter.execute(input);
   assert.equal(result.status, "succeeded");
   assert.equal(result.facts[0]?.name, "traffic_signal.state");
+  assert.equal(result.output.capability_id, "vision.traffic_signal");
+  assert.equal(result.output.context, undefined);
   assert.deepEqual(result.events, [{ type: "capture.requested", payload: { request_id: "r-1" } }]);
   assert.equal(handledOrigin, "policy");
   assert.equal(handledConsent, "explicit");
@@ -396,17 +399,23 @@ test("TaskRunner observation call passes the actual registry input schema with H
     definitions: [{ tool_id: "observation.request", version: "1.0", exposure: "policy", operation: "request", risk: "medium",
       input_schema: "../../contracts/schemas/observation-tool-input.schema.json", output_schema: "result", requires_consent: true,
       timeout_ms: 1000, retry_policy: "never", allowed_states: ["intersection_check"], emits: [] }],
-    handlers: new Map([["observation.request", async (call) => { capturedArguments = call.arguments; return { output: { capability_id: "vision.traffic_signal" } }; }]]),
+    handlers: new Map([["observation.request", async (call) => { capturedArguments = call.arguments; return {
+      facts: [{ name: "traffic_signal.state", value: "unknown", confidence: "high" as const }],
+    }; }]]),
     validateArguments: (_path, args) => ({ valid: !!validate(args), errors: validate.errors?.map((error) => error.message ?? "invalid") }),
     now: () => new Date(now()),
   });
   const runner = new TaskRunner({ tools: new ConcreteToolGatewayAdapter(concrete, { state: () => "intersection_check", now }), now });
+  const trustedContext = { intersection_id: "junction-7", travel_heading_deg: 90 };
   const output = await runner.run(plan([{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
     arguments: { capability_id: "vision.traffic_signal", capture_mode: "short_window", consent: "preauthorized" } }]),
-    { observationConsent: "explicit" });
+    { observationConsent: "explicit" }, () => true, trustedContext);
   assert.equal(output.results[0]?.status, "succeeded");
   assert.equal(capturedArguments?.capability_id, "vision.traffic_signal");
   assert.equal(capturedArguments?.capture_mode, "single_frame");
   assert.equal(capturedArguments?.consent, "explicit");
+  assert.deepEqual(capturedArguments?.context, trustedContext);
+  assert.equal(output.results[0]?.output.capability_id, "vision.traffic_signal");
+  assert.deepEqual(output.results[0]?.output.context, trustedContext);
   assert.equal(concrete.auditLog[0]?.decision, "executed");
 });

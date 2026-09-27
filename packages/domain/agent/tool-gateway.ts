@@ -46,9 +46,19 @@ export class ConcreteToolGatewayAdapter implements ToolGateway {
       arguments: structuredClone(input.arguments),
     };
     const result: ConcreteResult = await this.gateway.execute(call, this.options.state(input.sessionId));
+    const output = structuredClone(result.output);
+    if (input.toolId === "observation.request") {
+      // Request provenance belongs to the validated ToolCall, not Provider narrative output.
+      output.capability_id = input.arguments.capability_id;
+      if (input.arguments.context && typeof input.arguments.context === "object" && !Array.isArray(input.arguments.context)) {
+        output.context = structuredClone(input.arguments.context);
+      } else {
+        delete output.context;
+      }
+    }
     return {
       callId: result.call_id, sessionId: result.session_id, toolId: result.tool_id,
-      status: result.status, completedAt: result.completed_at, output: result.output,
+      status: result.status, completedAt: result.completed_at, output,
       facts: result.facts.map((fact) => ({
         name: fact.name, value: fact.value, confidence: fact.confidence, validUntil: fact.valid_until,
       })),
