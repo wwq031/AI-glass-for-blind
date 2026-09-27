@@ -49,6 +49,18 @@ test("adapter waits on a fresh confirmed hazard despite unrelated unknown facts"
     fact.name === "traffic_signal.state" ? { ...fact, validUntil: "2026-09-22T10:00:09.000Z" } : fact) }, now).action, "cannot_determine");
 });
 
+test("duplicate or conflicting signal facts never produce crossing permission", () => {
+  const facts = [
+    { name: "traffic_signal.state", value: "green", confidence: "high" as const, validUntil },
+    { name: "traffic_signal.direction_match", value: "yes", confidence: "high" as const, validUntil },
+    { name: "vehicle.activity", value: "no", confidence: "high" as const, validUntil },
+  ];
+  const base = { callId: "c1", sessionId: "s1", toolId: "observation.request", status: "succeeded" as const,
+    completedAt: now, output: {}, facts };
+  assert.equal(adviseCrossingFromResult({ ...base, facts: [...facts, { ...facts[0]!, value: "red" }] }, now).action, "cannot_determine");
+  assert.equal(adviseCrossingFromResult({ ...base, facts: [...facts, { ...facts[0]! }] }, now).action, "cannot_determine");
+});
+
 test("unknown, missing, expired, or direction mismatch fails closed", () => {
   for (const evidence of [
     { ...certain, trafficSignal: "unknown" as const },

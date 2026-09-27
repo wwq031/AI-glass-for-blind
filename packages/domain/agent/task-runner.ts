@@ -15,7 +15,10 @@ export class TaskRunner {
     this.options = options;
   }
 
-  async run(plan: AgentPlan, permissions: ExecutionPermissions, shouldContinue: () => boolean = () => true): Promise<TaskRunOutput> {
+  async run(
+    plan: AgentPlan, permissions: ExecutionPermissions, shouldContinue: () => boolean = () => true,
+    trustedCrossingContext?: { intersection_id: string; travel_heading_deg: number },
+  ): Promise<TaskRunOutput> {
     const effects: Effect[] = [];
     const results: ToolResult[] = [];
     let awaitingResult = false;
@@ -29,9 +32,18 @@ export class TaskRunner {
         }
         let result: ToolResult;
         try {
+          const args = structuredClone(action.arguments);
+          if (observation) {
+            args.capture_mode = "single_frame";
+            args.consent = permissions.observationConsent;
+            if (action.skillId === "crossing_advisory") {
+              delete args.context;
+              if (trustedCrossingContext) args.context = structuredClone(trustedCrossingContext);
+            }
+          }
           result = await this.options.tools.execute({
             sessionId: plan.sessionId, plan, actionIndex,
-            toolId: action.toolId, arguments: action.arguments,
+            toolId: action.toolId, arguments: args,
             origin: observation ? "policy" : "agent",
             consent: observation ? permissions.observationConsent : "none",
           });

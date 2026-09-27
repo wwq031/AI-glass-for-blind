@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import Ajv2020 from "ajv/dist/2020.js";
+import observationToolSchema from "../../packages/contracts/schemas/observation-tool-input.schema.json" with { type: "json" };
 import { SessionOrchestrator } from "../../packages/domain/agent/session-orchestrator.ts";
 import { TaskRunner } from "../../packages/domain/agent/task-runner.ts";
 import { ConcreteToolGatewayAdapter } from "../../packages/domain/agent/tool-gateway.ts";
@@ -385,4 +387,26 @@ test("concrete adapter preserves origin and consent in ToolCall", async () => {
   assert.equal(denied.error?.code, "permission_denied");
   assert.equal(denied.error?.retryable, false);
   assert.equal(concrete.auditLog[1]?.decision, "denied");
+});
+
+test("TaskRunner observation call passes the actual registry input schema with Harness-owned consent and single frame", async () => {
+  const validate = new Ajv2020().compile(observationToolSchema);
+  let capturedArguments: Record<string, unknown> | undefined;
+  const concrete = new ConcreteToolGateway({
+    definitions: [{ tool_id: "observation.request", version: "1.0", exposure: "policy", operation: "request", risk: "medium",
+      input_schema: "../../contracts/schemas/observation-tool-input.schema.json", output_schema: "result", requires_consent: true,
+      timeout_ms: 1000, retry_policy: "never", allowed_states: ["intersection_check"], emits: [] }],
+    handlers: new Map([["observation.request", async (call) => { capturedArguments = call.arguments; return { output: { capability_id: "vision.traffic_signal" } }; }]]),
+    validateArguments: (_path, args) => ({ valid: !!validate(args), errors: validate.errors?.map((error) => error.message ?? "invalid") }),
+    now: () => new Date(now()),
+  });
+  const runner = new TaskRunner({ tools: new ConcreteToolGatewayAdapter(concrete, { state: () => "intersection_check", now }), now });
+  const output = await runner.run(plan([{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+    arguments: { capability_id: "vision.traffic_signal", capture_mode: "short_window", consent: "preauthorized" } }]),
+    { observationConsent: "explicit" });
+  assert.equal(output.results[0]?.status, "succeeded");
+  assert.equal(capturedArguments?.capability_id, "vision.traffic_signal");
+  assert.equal(capturedArguments?.capture_mode, "single_frame");
+  assert.equal(capturedArguments?.consent, "explicit");
+  assert.equal(concrete.auditLog[0]?.decision, "executed");
 });

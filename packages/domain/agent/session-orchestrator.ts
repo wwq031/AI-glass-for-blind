@@ -22,6 +22,7 @@ interface SessionRecord {
   view: AgentSessionView;
   pendingFeedback?: AgentEvent;
   pendingCrossingCallId?: string;
+  crossingContext?: { intersection_id: string; travel_heading_deg: number };
   crossingPending?: boolean;
   epoch: number;
 }
@@ -88,8 +89,18 @@ export class SessionOrchestrator {
     }
     if (pending && session.pendingCrossingCallId && pending.type === "tool.results") {
       const results = pending.payload.results;
-      const result = Array.isArray(results) ? results.find((item): item is ToolResult =>
-        typeof item === "object" && item !== null && "callId" in item && item.callId === session.pendingCrossingCallId) : undefined;
+      const candidates = Array.isArray(results) ? results.filter((item): item is ToolResult =>
+        typeof item === "object" && item !== null && "callId" in item && item.callId === session.pendingCrossingCallId) : [];
+      const candidate = candidates.length === 1 ? candidates[0] : undefined;
+      const output = candidate?.output;
+      const echoedContext = output && typeof output.context === "object" && output.context !== null &&
+        !Array.isArray(output.context) ? output.context as Record<string, unknown> : undefined;
+      const trustedContext = session.crossingContext;
+      const result = candidate && candidate.sessionId === event.sessionId && candidate.toolId === "observation.request" &&
+        output?.capability_id === "vision.traffic_signal" && trustedContext && echoedContext &&
+        echoedContext.intersection_id === trustedContext.intersection_id &&
+        echoedContext.travel_heading_deg === trustedContext.travel_heading_deg && Array.isArray(candidate.facts)
+        ? candidate : undefined;
       const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
       const advisory = result ? adviseCrossingFromResult(result, createdAt) : adviseCrossingFromResult({
         callId: session.pendingCrossingCallId, sessionId: event.sessionId, toolId: "observation.request",
@@ -99,6 +110,7 @@ export class SessionOrchestrator {
       session.pendingFeedback = undefined;
       session.pendingCrossingCallId = undefined;
       session.crossingPending = false;
+      session.crossingContext = undefined;
       return { effects: [{ effectId: `${pending.eventId}:crossing-advisory`, sessionId: event.sessionId,
         type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } }], results: [] };
     }
@@ -107,7 +119,12 @@ export class SessionOrchestrator {
     try {
       const canonicalEvent = pending ? structuredClone(pending) : event;
       const navigationContext = skillContextFromNavigationEvent(canonicalEvent);
-      if (navigationContext.urgentSkillId || this.isUserCrossingRequest(canonicalEvent)) session.crossingPending = true;
+      if (navigationContext.urgentSkillId) {
+        session.crossingPending = true;
+        const navigation = navigationContext.navigation;
+        session.crossingContext = navigation?.intersectionId !== undefined && navigation.travelHeadingDeg !== undefined ?
+          { intersection_id: navigation.intersectionId, travel_heading_deg: navigation.travelHeadingDeg } : undefined;
+      } else if (this.isUserCrossingRequest(canonicalEvent)) session.crossingPending = true;
       const input = buildAgentTurnInput({
         event: canonicalEvent, session: { ...session.view, ...(navigationContext.navigation ? { navigation: navigationContext.navigation } : {}) }, skills: this.options.skills.list(),
         recentResults: canonicalEvent.type === "tool.results" && Array.isArray(canonicalEvent.payload.results)
@@ -145,7 +162,7 @@ export class SessionOrchestrator {
       session.view.lastSequence = canonicalEvent.sequence;
       session.view.activePlanId = plan.planId;
       session.view.goal = plan.goal;
-      const output = await this.runner.run(plan, permissions, () => session.epoch === epoch);
+      const output = await this.runner.run(plan, permissions, () => session.epoch === epoch, session.crossingContext);
       if (session.epoch !== epoch) {
         return { effects: [], results: output.results, rejection: { code: "interrupted" } };
       }
@@ -191,6 +208,7 @@ export class SessionOrchestrator {
     session.pendingFeedback = undefined;
     session.pendingCrossingCallId = undefined;
     session.crossingPending = false;
+    session.crossingContext = undefined;
     const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
     const effects: Effect[] = [{
       effectId: `${event.eventId}:session`, sessionId: event.sessionId,
@@ -250,6 +268,7 @@ export class SessionOrchestrator {
     session.crossingPending = false;
     session.pendingCrossingCallId = undefined;
     session.pendingFeedback = undefined;
+    session.crossingContext = undefined;
     return { effects: [this.unconfirmedCrossingEffect(event)],
       results: [], ...(rejection ? { rejection } : {}) };
   }

@@ -205,3 +205,54 @@ test("crossing Skill request guards speech even without navigation or crossing w
   assert.match(String(out.effects[0]?.payload.text), /请先停下/);
   assert.deepEqual(tools.calls, []);
 });
+
+test("positive crossing advice requires canonical navigation context and matching observation identity", async () => {
+  const expectedContext = { intersection_id: "junction-7", travel_heading_deg: 90 };
+  const facts = [
+    { name: "traffic_signal.state", value: "green", confidence: "high" as const, validUntil: "2026-09-22T10:00:15.000Z" },
+    { name: "traffic_signal.direction_match", value: "yes", confidence: "high" as const, validUntil: "2026-09-22T10:00:15.000Z" },
+    { name: "vehicle.activity", value: "no", confidence: "high" as const, validUntil: "2026-09-22T10:00:15.000Z" },
+  ];
+  const baseline: ToolResult = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+    status: "succeeded", completedAt: at, output: { capability_id: "vision.traffic_signal", context: expectedContext }, facts };
+  const cases: Array<[string, ToolResult, string]> = [
+    ["valid", baseline, "proceed_with_caution"],
+    ["wrong call", { ...baseline, callId: "wrong" }, "cannot_determine"],
+    ["wrong session", { ...baseline, sessionId: "other" }, "cannot_determine"],
+    ["wrong tool", { ...baseline, toolId: "facts.query" }, "cannot_determine"],
+    ["wrong capability", { ...baseline, output: { ...baseline.output, capability_id: "vision.scene" } }, "cannot_determine"],
+    ["wrong intersection", { ...baseline, output: { ...baseline.output, context: { ...expectedContext, intersection_id: "other" } } }, "cannot_determine"],
+    ["wrong heading", { ...baseline, output: { ...baseline.output, context: { ...expectedContext, travel_heading_deg: 270 } } }, "cannot_determine"],
+    ["missing echo", { ...baseline, output: { capability_id: "vision.traffic_signal" } }, "cannot_determine"],
+    ["conflicting signal facts", { ...baseline, facts: [...facts, { ...facts[0]!, value: "red" }] }, "cannot_determine"],
+  ];
+  for (const [label, result, expected] of cases) {
+    const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal", context: { intersection_id: "model-forged", travel_heading_deg: 1 } } }])]);
+    const tools = new RecordedToolGateway([result]);
+    const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+    const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+    assert.deepEqual(tools.calls[0]?.arguments.context, expectedContext, `${label}: context must come from navigation`);
+    const advice = await core.handle(first.followUpEvents![0]!);
+    assert.equal(advice.effects[0]?.payload.action, expected, label);
+  }
+});
+
+test("missing navigation ID or heading prevents positive crossing advice", async () => {
+  for (const payload of [{ travel_heading_deg: 90 }, { intersection_id: "junction-7" },
+    { intersection_id: "junction-7", travel_heading_deg: 400 }]) {
+    const event = { ...nav("navigation.intersection_approaching", 2), payload };
+    const result: ToolResult = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+      status: "succeeded", completedAt: at, output: { capability_id: "vision.traffic_signal", context: payload },
+      facts: [
+        { name: "traffic_signal.state", value: "green", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+        { name: "traffic_signal.direction_match", value: "yes", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+        { name: "vehicle.activity", value: "no", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+      ] };
+    const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }])]);
+    const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([result]), skills: createP0SkillRegistry(), now });
+    const first = await core.handle(event, { observationConsent: "explicit" });
+    const advice = await core.handle(first.followUpEvents![0]!);
+    assert.equal(advice.effects[0]?.payload.action, "cannot_determine");
+  }
+});

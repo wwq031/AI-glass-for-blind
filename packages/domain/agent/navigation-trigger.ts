@@ -13,9 +13,10 @@ export function skillContextFromNavigationEvent(event: AgentEvent): NavigationSk
   return {
     urgentSkillId: "crossing_advisory",
     navigation: {
-      ...(typeof payload.intersection_id === "string" ? { intersectionId: payload.intersection_id } : {}),
+      ...(typeof payload.intersection_id === "string" && payload.intersection_id.length > 0 ? { intersectionId: payload.intersection_id } : {}),
       ...(typeof payload.distance_m === "number" && Number.isFinite(payload.distance_m) ? { distanceM: payload.distance_m } : {}),
-      ...(typeof payload.travel_heading_deg === "number" && Number.isFinite(payload.travel_heading_deg) ? { travelHeadingDeg: payload.travel_heading_deg } : {}),
+      ...(typeof payload.travel_heading_deg === "number" && Number.isFinite(payload.travel_heading_deg) &&
+        payload.travel_heading_deg >= 0 && payload.travel_heading_deg < 360 ? { travelHeadingDeg: payload.travel_heading_deg } : {}),
     },
   };
 }

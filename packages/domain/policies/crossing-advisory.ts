@@ -38,6 +38,9 @@ export function adviseCrossingFromResult(result: ToolResult, now: string): Cross
   if (result.toolId !== "observation.request" || (result.status !== "succeeded" && result.status !== "partial")) {
     return adviseCrossing({ now });
   }
+  // A single ToolResult must not contain competing claims for a safety-critical fact.
+  if (["traffic_signal.state", "traffic_signal.direction_match", "vehicle.activity"].some((name) =>
+    result.facts.filter((item) => item.name === name).length > 1)) return adviseCrossing({ now });
   const fact = (name: string) => result.facts.find((item) => item.name === name);
   const signal = fact("traffic_signal.state");
   const direction = fact("traffic_signal.direction_match");
