@@ -271,8 +271,9 @@ export class SessionOrchestrator {
   }
 
   private isRouteInvalidating(event: AgentEvent): boolean {
-    return event.source === "navigation" && ["navigation.started", "navigation.off_route", "navigation.rerouting",
-      "navigation.arrived", "navigation.stopped", "navigation.location_quality_changed"].includes(event.type);
+    return event.source === "navigation" && (skillContextFromNavigationEvent(event).urgentSkillId !== undefined ||
+      ["navigation.started", "navigation.off_route", "navigation.rerouting",
+      "navigation.arrived", "navigation.stopped", "navigation.location_quality_changed"].includes(event.type));
   }
 
   private finishUnconfirmedCrossing(

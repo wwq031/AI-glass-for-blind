@@ -214,6 +214,34 @@ test("route-invalidating events stale pending crossing evidence without consumin
   }
 });
 
+test("a new crossing event stales an older pending green result and can be resubmitted", async () => {
+  const oldContext = { intersection_id: "junction-7", travel_heading_deg: 90 };
+  const green: ToolResult = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request", status: "succeeded",
+    completedAt: at, output: { capability_id: "vision.traffic_signal", context: oldContext }, facts: [
+      { name: "traffic_signal.state", value: "green", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+      { name: "traffic_signal.direction_match", value: "yes", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+      { name: "vehicle.activity", value: "no", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+    ] };
+  const agent = new RecordedLlmAgent([
+    plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-4", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
+  ]);
+  const tools = new RecordedToolGateway([green, { ...green, callId: "p-nav-4:0", status: "partial", facts: [] }]);
+  const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+  const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  const nextPayload = { intersection_id: "junction-8", distance_m: 12, travel_heading_deg: 180 };
+  const competing = await core.handle({ ...nav("navigation.crosswalk_approaching", 3), payload: nextPayload });
+  assert.equal(competing.rejection?.code, "pending_feedback");
+  assert.equal(core.snapshot("walk-1").lastSequence, 2);
+  const oldAdvice = await core.handle(first.followUpEvents![0]!);
+  assert.equal(oldAdvice.effects[0]?.payload.action, "cannot_determine");
+  assert.equal(agent.inputs.length, 1);
+  const second = await core.handle({ ...nav("navigation.crosswalk_approaching", 4), payload: nextPayload }, { observationConsent: "explicit" });
+  assert.equal(agent.inputs[1]?.session.navigation?.intersectionId, "junction-8");
+  assert.deepEqual(tools.calls[1]?.arguments.context, { intersection_id: "junction-8", travel_heading_deg: 180 });
+  assert.equal(second.followUpEvents?.[0]?.type, "tool.results");
+});
+
 test("malformed observation facts resolve pending crossing conservatively without stranding session", async () => {
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
