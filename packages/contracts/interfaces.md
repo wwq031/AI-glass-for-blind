@@ -10,6 +10,12 @@
 
 `ToolGateway` 是逻辑调用合同，而不是某一种蓝牙、地图或云端 SDK。核心依赖注入该合同；已有 `ConcreteToolGatewayAdapter` 负责映射到 Tool 注册表与执行网关。`LocalProvider`、`RemoteProvider`、`McpProviderAdapter` 和 `RecordedProvider` 是核心外 `ProviderRouter` 的实现选择，不是 Agent 核心内必须同时启动的组件。当前离线验收使用录制的 LLM 计划和 Tool 结果；真实本地、远程或 MCP 适配器尚需分别接入和验证。
 
+### JSON 合同与运行时类型
+
+跨进程 JSON 使用 `snake_case` 和 `schema_version`；Agent 内部的 `AgentPlan`、`AgentEvent`、`Effect` 使用 `camelCase`。端口适配器必须在进入 Agent 前调用 `decodeAgentPlan` / `decodeAgentEvent`，并在向外发送事件或效果前调用 `encodeAgentEvent` / `encodeEffect`；需要把 Effect JSON 读入运行时时可调用 `decodeEffect`。编解码器拒绝未知字段和不符合字段类型的值；`schema_version` 当前解码时检查主次版本格式，编码时省略参数则写入 `1.0`。计划的 `response_draft` 是可选字段，转换后保存在 `responseDraft`。
+
+Event 的 wire `source` 表示产生事件的设备或子系统；Agent 内的 `EventSource` 是较粗的语义分类。归一规则为：`glasses`、`phone`、`transport`、`device` → `device`；`speech`、`user` → `user`；`navigation`、`motion` 保持原类；`vision`、`provider` → `provider`；`agent`、`system`、`storage`、`simulator` → `system`。解码后将原 wire 值保存在 `sourceDetail`，所以未修改的事件重新编码时会保留精确来源；新建事件没有该字段时，编码器使用 `user`、`device`、`navigation`、`motion`、`provider` 或 `system` 作为规范语义来源。编码器会拒绝与归一类别不匹配的 `sourceDetail`。`trace_id` 在运行时映射为 `traceId` 并在编码时保留。
+
 ## DeviceTransport
 
 ```text

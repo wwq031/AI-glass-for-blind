@@ -1,4 +1,19 @@
 export type EventSource = "user" | "system" | "navigation" | "motion" | "provider" | "device";
+export type EventSourceDetail =
+  | "glasses"
+  | "phone"
+  | "transport"
+  | "speech"
+  | "navigation"
+  | "motion"
+  | "vision"
+  | "provider"
+  | "agent"
+  | "system"
+  | "storage"
+  | "simulator"
+  | "user"
+  | "device";
 
 export interface AgentEvent {
   eventId: string;
@@ -8,6 +23,9 @@ export interface AgentEvent {
   type: string;
   occurredAt: string;
   payload: Record<string, unknown>;
+  traceId?: string;
+  /** Original contract producer when source has been normalized to a semantic category. */
+  sourceDetail?: EventSourceDetail;
 }
 
 export type PlanAction =
@@ -90,6 +108,7 @@ export interface ToolResult {
 export interface Effect {
   effectId: string;
   sessionId: string;
+  planId?: string;
   type: "speech" | "haptic" | "device_command" | "navigation" | "session";
   createdAt: string;
   payload: Record<string, unknown>;

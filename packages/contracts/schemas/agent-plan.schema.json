@@ -14,7 +14,8 @@
       "type": "array",
       "items": { "$ref": "#/$defs/action" }
     },
-    "created_at": { "type": "string", "format": "date-time" }
+    "created_at": { "type": "string", "format": "date-time" },
+    "response_draft": { "type": "string" }
   },
   "additionalProperties": false,
   "$defs": {

@@ -45,3 +45,5 @@ Event enters Agent; AgentPlan is produced by LLM; ToolResult returns as a later 
 `capabilities/registry.json` 是观察能力的注册表。新增普通观察能力时优先新增注册项和事实 Schema，不修改会话核心合同。注册项可用 `compatible_skills` 明确声明可供哪些 Skill 提议；例如 `vision.menu` 声明 `read_text`。该字段只用于计划兼容性校验，不授予观察执行权限。
 
 `examples/` 中的样例用于 Fake 和合同测试；样例不包含真实设备、个人图像或账号数据。
+
+TypeScript 运行时与 wire JSON 的边界由 `packages/domain/agent/contract-codecs.ts` 处理：入口先解码并检查蛇形字段，出口把 Event 和 Effect 编码为带 `schema_version` 的合同对象。计划中的可选 `response_draft` 在 wire 上使用 `response_draft`，运行时使用 `responseDraft`。
