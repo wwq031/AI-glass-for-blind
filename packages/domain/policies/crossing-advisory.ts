@@ -35,7 +35,15 @@ export function adviseCrossing(evidence: CrossingEvidence): CrossingAdvisory {
 
 /** Only registered Provider facts are accepted; a missing fact never becomes a negative observation. */
 export function adviseCrossingFromResult(result: ToolResult, now: string): CrossingAdvisory {
-  if (result.toolId !== "observation.request" || (result.status !== "succeeded" && result.status !== "partial")) {
+  if (!result || typeof result !== "object" || result.toolId !== "observation.request" ||
+      (result.status !== "succeeded" && result.status !== "partial") || !Array.isArray(result.facts)) {
+    return adviseCrossing({ now });
+  }
+  if (result.facts.some((item) => !item || typeof item !== "object" || Array.isArray(item) ||
+    typeof item.name !== "string" || item.name.length === 0 ||
+    !["high", "medium", "low", "unknown"].includes(item.confidence) ||
+    (item.validUntil !== undefined &&
+      (typeof item.validUntil !== "string" || !Number.isFinite(Date.parse(item.validUntil)))))) {
     return adviseCrossing({ now });
   }
   // A single ToolResult must not contain competing claims for a safety-critical fact.

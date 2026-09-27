@@ -61,6 +61,26 @@ test("duplicate or conflicting signal facts never produce crossing permission", 
   assert.equal(adviseCrossingFromResult({ ...base, facts: [...facts, { ...facts[0]! }] }, now).action, "cannot_determine");
 });
 
+test("malformed Provider facts fail closed without throwing", () => {
+  const base = { callId: "c1", sessionId: "s1", toolId: "observation.request", status: "succeeded" as const,
+    completedAt: now, output: {}, facts: [
+      { name: "traffic_signal.state", value: "green", confidence: "high" as const, validUntil },
+      { name: "traffic_signal.direction_match", value: "yes", confidence: "high" as const, validUntil },
+      { name: "vehicle.activity", value: "no", confidence: "high" as const, validUntil },
+    ] };
+  for (const facts of [
+    [null, ...base.facts],
+    [42, ...base.facts],
+    [{ name: "traffic_signal.state", value: "green", confidence: "bogus", validUntil }, ...base.facts.slice(1)],
+    [{ name: "traffic_signal.state", value: "green", confidence: "high", validUntil: 123 }, ...base.facts.slice(1)],
+    [...base.facts, { name: "traffic_signal.state", value: "red" }],
+  ]) {
+    assert.doesNotThrow(() => adviseCrossingFromResult({ ...base, facts: facts as never }, now));
+    assert.equal(adviseCrossingFromResult({ ...base, facts: facts as never }, now).action, "cannot_determine");
+  }
+  assert.equal(adviseCrossingFromResult({ ...base, facts: null as never }, now).action, "cannot_determine");
+});
+
 test("unknown, missing, expired, or direction mismatch fails closed", () => {
   for (const evidence of [
     { ...certain, trafficSignal: "unknown" as const },

@@ -22,6 +22,7 @@ interface SessionRecord {
   view: AgentSessionView;
   pendingFeedback?: AgentEvent;
   pendingCrossingCallId?: string;
+  pendingCrossingEvidenceStale?: boolean;
   crossingContext?: { intersection_id: string; travel_heading_deg: number };
   crossingPending?: boolean;
   epoch: number;
@@ -69,6 +70,10 @@ export class SessionOrchestrator {
     if (this.processing.has(event.sessionId)) {
       return { effects: [], results: [], rejection: { code: "stale_event" } };
     }
+    if (session.pendingCrossingCallId && this.isRouteInvalidating(event)) {
+      // Do not consume canonical feedback, but ensure its evidence cannot authorize passage.
+      session.pendingCrossingEvidenceStale = true;
+    }
     if (session.crossingPending && this.isRouteProgress(event)) {
       if (session.pendingCrossingCallId) {
         // The canonical ToolResult owns the next sequence. Submit it first, then resubmit
@@ -102,13 +107,14 @@ export class SessionOrchestrator {
         echoedContext.travel_heading_deg === trustedContext.travel_heading_deg && Array.isArray(candidate.facts)
         ? candidate : undefined;
       const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
-      const advisory = result ? adviseCrossingFromResult(result, createdAt) : adviseCrossingFromResult({
+      const advisory = result && !session.pendingCrossingEvidenceStale ? adviseCrossingFromResult(result, createdAt) : adviseCrossingFromResult({
         callId: session.pendingCrossingCallId, sessionId: event.sessionId, toolId: "observation.request",
         status: "failed", completedAt: createdAt, output: {}, facts: [],
       }, createdAt);
       session.view.lastSequence = pending.sequence;
       session.pendingFeedback = undefined;
       session.pendingCrossingCallId = undefined;
+      session.pendingCrossingEvidenceStale = undefined;
       session.crossingPending = false;
       session.crossingContext = undefined;
       return { effects: [{ effectId: `${pending.eventId}:crossing-advisory`, sessionId: event.sessionId,
@@ -121,6 +127,7 @@ export class SessionOrchestrator {
       const navigationContext = skillContextFromNavigationEvent(canonicalEvent);
       if (navigationContext.urgentSkillId) {
         session.crossingPending = true;
+        session.pendingCrossingEvidenceStale = undefined;
         const navigation = navigationContext.navigation;
         session.crossingContext = navigation?.intersectionId !== undefined && navigation.travelHeadingDeg !== undefined ?
           { intersection_id: navigation.intersectionId, travel_heading_deg: navigation.travelHeadingDeg } : undefined;
@@ -207,6 +214,7 @@ export class SessionOrchestrator {
     session.view.activePlanId = undefined;
     session.pendingFeedback = undefined;
     session.pendingCrossingCallId = undefined;
+    session.pendingCrossingEvidenceStale = undefined;
     session.crossingPending = false;
     session.crossingContext = undefined;
     const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
@@ -258,7 +266,13 @@ export class SessionOrchestrator {
 
   private isRouteProgress(event: AgentEvent): boolean {
     return event.source === "navigation" && ["navigation.started", "navigation.approaching_maneuver",
-      "navigation.off_route", "navigation.rerouting", "navigation.arrived", "navigation.stopped"].includes(event.type);
+      "navigation.off_route", "navigation.rerouting", "navigation.arrived", "navigation.stopped",
+      "navigation.location_quality_changed"].includes(event.type);
+  }
+
+  private isRouteInvalidating(event: AgentEvent): boolean {
+    return event.source === "navigation" && ["navigation.started", "navigation.off_route", "navigation.rerouting",
+      "navigation.arrived", "navigation.stopped", "navigation.location_quality_changed"].includes(event.type);
   }
 
   private finishUnconfirmedCrossing(
@@ -267,6 +281,7 @@ export class SessionOrchestrator {
     session.view.lastSequence = event.sequence;
     session.crossingPending = false;
     session.pendingCrossingCallId = undefined;
+    session.pendingCrossingEvidenceStale = undefined;
     session.pendingFeedback = undefined;
     session.crossingContext = undefined;
     return { effects: [this.unconfirmedCrossingEffect(event)],

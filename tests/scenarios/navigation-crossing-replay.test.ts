@@ -191,6 +191,47 @@ test("route progress cannot discard pending crossing ToolResult or elicit model 
   assert.equal(resumed.effects[0]?.payload.text, "导航继续。");
 });
 
+test("route-invalidating events stale pending crossing evidence without consuming canonical feedback", async () => {
+  for (const routeType of ["navigation.off_route", "navigation.rerouting", "navigation.stopped", "navigation.arrived", "navigation.location_quality_changed"]) {
+    const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }])]);
+    const tools = new RecordedToolGateway([{ callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+      status: "succeeded", completedAt: at, output: { capability_id: "vision.traffic_signal", context: { intersection_id: "junction-7", travel_heading_deg: 90 } },
+      facts: [
+        { name: "traffic_signal.state", value: "green", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+        { name: "traffic_signal.direction_match", value: "yes", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+        { name: "vehicle.activity", value: "no", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
+      ] }]);
+    const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+    const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+    const invalidating = await core.handle(nav(routeType, 3));
+    assert.equal(invalidating.rejection?.code, "pending_feedback", routeType);
+    assert.equal(core.snapshot("walk-1").lastSequence, 2);
+    const feedback = await core.handle(first.followUpEvents![0]!);
+    assert.equal(feedback.effects[0]?.payload.action, "cannot_determine", routeType);
+    assert.match(String(feedback.effects[0]?.payload.text), /请先停下/);
+    assert.equal(agent.inputs.length, 1);
+  }
+});
+
+test("malformed observation facts resolve pending crossing conservatively without stranding session", async () => {
+  const agent = new RecordedLlmAgent([
+    plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-4", [{ kind: "speak", text: "路线继续。", priority: "normal" }]),
+  ]);
+  const malformed = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request", status: "succeeded",
+    completedAt: at, output: { capability_id: "vision.traffic_signal", context: { intersection_id: "junction-7", travel_heading_deg: 90 } },
+    facts: [null] } as ToolResult;
+  const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([malformed]), skills: createP0SkillRegistry(), now });
+  const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  const advice = await core.handle(first.followUpEvents![0]!);
+  assert.equal(advice.effects[0]?.payload.action, "cannot_determine");
+  assert.equal(core.snapshot("walk-1").lastSequence, 3);
+  const continued = await core.handle(nav("navigation.approaching_maneuver", 4));
+  assert.equal(continued.effects[0]?.payload.text, "路线继续。");
+});
+
 test("crossing Skill request guards speech even without navigation or crossing words", async () => {
   const user: AgentEvent = { eventId: "ask-1", sessionId: "walk-1", sequence: 1, source: "user", type: "speech.input",
     occurredAt: at, payload: { transcript: "帮我看一下", intent_hint: "query" } };
