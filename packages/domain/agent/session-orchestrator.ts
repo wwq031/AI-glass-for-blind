@@ -1,5 +1,5 @@
 import { buildAgentTurnInput } from "./context-builder.ts";
-import { skillContextFromNavigationEvent } from "./navigation-trigger.ts";
+import { isCrossingApproachEvent, skillContextFromNavigationEvent } from "./navigation-trigger.ts";
 import { adviseCrossing, adviseCrossingFromResult } from "../policies/crossing-advisory.ts";
 import type { LlmAgent, AgentSessionView } from "./llm-agent.ts";
 import { validatePlan, type ExecutionPermissions, type PlanValidation } from "./plan-validator.ts";
@@ -13,7 +13,7 @@ export interface AgentHandleOutput {
   /** Caller may explicitly submit these as the next Event; no automatic LLM loop. */
   followUpEvents?: AgentEvent[];
   rejection?: {
-    code: "stale_event" | "pending_feedback" | "invalid_feedback" | "interrupted" | "crossing_context_retired" | Exclude<PlanValidation, { ok: true }>["code"];
+    code: "stale_event" | "pending_feedback" | "invalid_feedback" | "interrupted" | "crossing_context_retired" | "invalid_navigation_event" | Exclude<PlanValidation, { ok: true }>["code"];
     actionIndex?: number;
   };
 }
@@ -29,7 +29,7 @@ interface SessionRecord {
 }
 
 export class SessionOrchestrator {
-  private readonly options: { agent: LlmAgent; tools: ToolGateway; skills: SkillRegistry; now?: () => string };
+  private readonly options: { agent: LlmAgent; tools: ToolGateway; skills: SkillRegistry; now?: () => string; navigationTriggerMaxAgeMs?: number };
   private readonly sessions = new Map<string, SessionRecord>();
   private readonly processing = new Set<string>();
   private readonly runner: TaskRunner;
@@ -39,6 +39,7 @@ export class SessionOrchestrator {
     tools: ToolGateway;
     skills: SkillRegistry;
     now?: () => string;
+    navigationTriggerMaxAgeMs?: number;
   }) {
     this.options = options;
     this.runner = new TaskRunner({ tools: options.tools, now: options.now });
@@ -124,7 +125,13 @@ export class SessionOrchestrator {
     const epoch = session.epoch;
     try {
       const canonicalEvent = pending ? structuredClone(pending) : event;
-      const navigationContext = skillContextFromNavigationEvent(canonicalEvent);
+      const navigationContext = skillContextFromNavigationEvent(canonicalEvent, {
+        now: (this.options.now ?? (() => new Date().toISOString()))(),
+        maxAgeMs: this.options.navigationTriggerMaxAgeMs,
+      });
+      if (navigationContext.rejected) {
+        return this.finishUnconfirmedCrossing(canonicalEvent, session, { code: "invalid_navigation_event" });
+      }
       if (navigationContext.urgentSkillId) {
         session.crossingPending = true;
         session.pendingCrossingEvidenceStale = undefined;
@@ -271,7 +278,7 @@ export class SessionOrchestrator {
   }
 
   private isRouteInvalidating(event: AgentEvent): boolean {
-    return event.source === "navigation" && (skillContextFromNavigationEvent(event).urgentSkillId !== undefined ||
+    return event.source === "navigation" && (isCrossingApproachEvent(event) ||
       ["navigation.started", "navigation.off_route", "navigation.rerouting",
       "navigation.arrived", "navigation.stopped", "navigation.location_quality_changed"].includes(event.type));
   }

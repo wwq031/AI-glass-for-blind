@@ -114,8 +114,27 @@ test("unrecognized provider values and invalid expiry fail closed", () => {
 test("navigation event contributes context, never an observation call", () => {
   const event: AgentEvent = { eventId: "n1", sessionId: "s1", sequence: 2, source: "navigation", type: "navigation.intersection_approaching", occurredAt: now,
     payload: { intersection_id: "cross-1", distance_m: 22, travel_heading_deg: 90 } };
-  assert.deepEqual(skillContextFromNavigationEvent(event), {
+  assert.deepEqual(skillContextFromNavigationEvent(event, { now }), {
     urgentSkillId: "crossing_advisory", navigation: { intersectionId: "cross-1", distanceM: 22, travelHeadingDeg: 90 },
   });
-  assert.deepEqual(skillContextFromNavigationEvent({ ...event, type: "navigation.started" }), {});
+  assert.deepEqual(skillContextFromNavigationEvent({ ...event, type: "navigation.started" }, { now }), {});
+});
+
+test("stale, future, and malformed approach events cannot create actionable crossing context", () => {
+  const event: AgentEvent = { eventId: "n1", sessionId: "s1", sequence: 2, source: "navigation",
+    type: "navigation.intersection_approaching", occurredAt: now,
+    payload: { intersection_id: "junction-7", distance_m: 12, travel_heading_deg: 90 } };
+  for (const [candidate, clock] of [
+    [{ ...event, occurredAt: "2026-09-22T10:00:00.000Z" }, "2026-09-22T10:00:16.000Z"],
+    [{ ...event, occurredAt: "2026-09-22T10:00:11.000Z" }, now],
+    [{ ...event, payload: { ...event.payload, distance_m: -1 } }, now],
+    [{ ...event, payload: { ...event.payload, intersection_id: "" } }, now],
+    [{ ...event, payload: { ...event.payload, travel_heading_deg: 360 } }, now],
+  ] as const) {
+    const context = skillContextFromNavigationEvent(candidate, { now: clock, maxAgeMs: 15_000 });
+    assert.equal(context.urgentSkillId, undefined);
+    assert.equal(context.rejected, true);
+  }
+  assert.equal(skillContextFromNavigationEvent({ ...event, occurredAt: "2026-09-22T10:00:00.000Z" },
+    { now: "2026-09-22T10:00:16.000Z", maxAgeMs: 20_000 }).urgentSkillId, "crossing_advisory");
 });

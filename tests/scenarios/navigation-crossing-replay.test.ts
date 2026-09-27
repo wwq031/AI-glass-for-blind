@@ -77,7 +77,8 @@ test("crossing context rejects model speech and completion before observation", 
   ])]);
   const tools = new RecordedToolGateway([]);
   const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
-  const out = await core.handle(nav("navigation.crosswalk_approaching", 2));
+  const out = await core.handle({ ...nav("navigation.crosswalk_approaching", 2),
+    payload: { intersection_id: "junction-7", distance_m: 12, travel_heading_deg: 90 } });
   assert.equal(out.rejection?.code, "policy_required");
   assert.equal(out.effects.length, 1);
   assert.notEqual(out.effects[0]?.payload.text, "绿灯，可以过。");
@@ -311,17 +312,31 @@ test("missing navigation ID or heading prevents positive crossing advice", async
   for (const payload of [{ travel_heading_deg: 90 }, { intersection_id: "junction-7" },
     { intersection_id: "junction-7", travel_heading_deg: 400 }]) {
     const event = { ...nav("navigation.intersection_approaching", 2), payload };
-    const result: ToolResult = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
-      status: "succeeded", completedAt: at, output: { capability_id: "vision.traffic_signal", context: payload },
-      facts: [
-        { name: "traffic_signal.state", value: "green", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
-        { name: "traffic_signal.direction_match", value: "yes", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
-        { name: "vehicle.activity", value: "no", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
-      ] };
     const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }])]);
-    const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([result]), skills: createP0SkillRegistry(), now });
-    const first = await core.handle(event, { observationConsent: "explicit" });
-    const advice = await core.handle(first.followUpEvents![0]!);
-    assert.equal(advice.effects[0]?.payload.action, "cannot_determine");
+    const tools = new RecordedToolGateway([]);
+    const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+    const out = await core.handle(event, { observationConsent: "explicit" });
+    assert.equal(out.rejection?.code, "invalid_navigation_event");
+    assert.equal(out.effects[0]?.payload.action, "cannot_determine");
+    assert.equal(agent.inputs.length, 0);
+    assert.deepEqual(tools.calls, []);
+  }
+});
+
+test("delayed or negative-distance approach never reaches LLM or camera", async () => {
+  for (const event of [
+    { ...nav("navigation.intersection_approaching", 2), occurredAt: "2026-09-22T09:59:40.000Z" },
+    { ...nav("navigation.crosswalk_approaching", 2), payload: { intersection_id: "junction-7", travel_heading_deg: 90, distance_m: -3 } },
+  ]) {
+    const agent = new RecordedLlmAgent([plan(event.eventId, [{ kind: "tool_call", skillId: "crossing_advisory",
+      toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }])]);
+    const tools = new RecordedToolGateway([]);
+    const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
+    const out = await core.handle(event, { observationConsent: "explicit" });
+    assert.equal(out.rejection?.code, "invalid_navigation_event");
+    assert.equal(out.effects[0]?.payload.action, "cannot_determine");
+    assert.match(String(out.effects[0]?.payload.text), /请先停下/);
+    assert.equal(agent.inputs.length, 0);
+    assert.deepEqual(tools.calls, []);
   }
 });
