@@ -198,7 +198,7 @@ Agent Harness P0 已把这条链路实现为代码：`LlmAgent` 只输出候选 
 | `#13` | 事件驱动的 `SessionOrchestrator` 和黄金场景回放 |
 | `#14` | GitHub Actions CI：类型、测试和合同自动检查 |
 | `#16` | `ToolGateway` 权限、状态、授权、Schema、幂等、超时和审计边界 |
-| — | Agent Harness P0：LLM 规划接缝、计划校验器、Skill 注册表、路口保守策略和路口场景回放（44 次提交，直接快进合并，未经 PR 评审） |
+| — | Agent Harness P0：LLM 规划接缝、计划校验器、Skill 注册表、路口保守策略和路口场景回放（44 次提交） |
 
 当前自动化基线：
 
