@@ -183,6 +183,8 @@ LLM 提出 ToolCall
 
 模型不能直接调用摄像头、地图、CXR、蓝牙、任意网络请求或 TTS，也不能伪造观察结果和导航状态。
 
+Agent Harness P0 已把这条链路实现为代码：`LlmAgent` 只输出候选 `AgentPlan`，`PlanValidator` 校验计划结构、Skill/Tool 权限、能力兼容性和观察授权，`TaskRunner` 再经 `ToolGateway` 执行；`ContextBuilder` 负责在送入模型前剥离二进制媒体和 token/secret 等敏感字段。该实现使用录制模型和模拟 Tool 完成离线验证，真实模型 Provider 仍需接入。
+
 ## 5. 已完成的工程任务
 
 | PR | 完成内容 |
@@ -196,12 +198,13 @@ LLM 提出 ToolCall
 | `#13` | 事件驱动的 `SessionOrchestrator` 和黄金场景回放 |
 | `#14` | GitHub Actions CI：类型、测试和合同自动检查 |
 | `#16` | `ToolGateway` 权限、状态、授权、Schema、幂等、超时和审计边界 |
+| — | Agent Harness P0：LLM 规划接缝、计划校验器、Skill 注册表、路口保守策略和路口场景回放（44 次提交，直接快进合并，未经 PR 评审） |
 
 当前自动化基线：
 
 - TypeScript 严格类型检查通过；
-- 22 项自动化测试通过；
-- 29 个 Schema、7 个合同样例、5 个视觉能力和 7 个 Tool 校验通过；
+- 124 项自动化测试通过；
+- 33 个 Schema、10 个合同样例、5 个视觉能力、8 个 Skill 和 7 个 Tool 校验通过；
 - Pull Request 会在 GitHub Actions 中自动执行上述检查。
 
 ## 6. 所需硬件与设备信息
@@ -273,6 +276,7 @@ LLM 提出 ToolCall
 - 领域接口和多端合同能够编译并自动校验；
 - 导航、提醒、设备、观察和会话可以通过 Fake/Simulator 串成完整黄金场景；
 - Tool 调用已经具备权限、授权、状态、Schema、幂等和超时边界；
+- LLM 规划回路已实现为可校验的 Agent Harness P0，并用录制模型完成离线场景回放；
 - 高德 Web API 可以替换 Fake 导航完成 POI 搜索和步行路线查询；
 - CI 能阻止类型、测试和合同错误进入主分支。
 
