@@ -60,3 +60,9 @@
 ## 开始贡献
 
 先阅读 [`CONTEXT.md`](CONTEXT.md)、[`docs/architecture/system-architecture.md`](docs/architecture/system-architecture.md)、[`docs/architecture/core-agent-design.md`](docs/architecture/core-agent-design.md)、[`docs/architecture/tool-system.md`](docs/architecture/tool-system.md)、[`packages/contracts/interfaces.md`](packages/contracts/interfaces.md)、[`docs/team/file-delivery-matrix.md`](docs/team/file-delivery-matrix.md) 和 [`docs/scenarios/golden-path-navigation-restaurant.md`](docs/scenarios/golden-path-navigation-restaurant.md)。实现前先遵守合同文件，不把具体 SDK 类型泄漏到 `packages/domain`。
+
+## 本地 OCR 参考
+
+项目已加入基于 Tesseract.js/WASM 的本地 OCR Provider，可从图片提取文本、置信度和位置框。首次运行会下载并缓存中英文模型；如需首次启动也离线，需预置模型。当前适用于 Node.js 演示/服务端流程，尚未接入手机相机。
+
+详见 [`packages/providers/ocr/README.md`](packages/providers/ocr/README.md)。
