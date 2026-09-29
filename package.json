@@ -16,5 +16,8 @@
     "ajv": "^8.20.0",
     "ajv-formats": "^3.0.1",
     "typescript": "^5.8.0"
+  },
+  "dependencies": {
+    "tesseract.js": "7.0.0"
   }
 }

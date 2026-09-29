@@ -10,3 +10,5 @@
 - `speech-provider`：手机 TTS 或眼镜播报。
 
 每个真实适配器都应配一个 `testkit` 替身，先用合同和场景回放验证，不把供应商对象传入领域核心。
+
+- `ocr/tesseract-ocr-client.ts`：本地 Tesseract.js OCR，接入说明见 [`ocr/README.md`](ocr/README.md)。
