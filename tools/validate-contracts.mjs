@@ -15,6 +15,7 @@ const capabilitySchema = join(
   "traffic-signal-facts.schema.json",
 );
 const capabilityRegistryPath = join(root, "packages", "contracts", "capabilities", "registry.json");
+const skillRegistryPath = join(root, "packages", "contracts", "skills", "registry.json");
 const toolRegistryPath = join(root, "packages", "providers", "registry", "tool-registry.json");
 
 const exampleSchemas = new Map([
@@ -25,7 +26,21 @@ const exampleSchemas = new Map([
   ["observation-result-intersection.json", "observation-result.schema.json"],
   ["crossing-advisory-recheck.json", "crossing-advisory.schema.json"],
   ["contract-error-capture-failed.json", "contract-error.schema.json"],
+  ["agent-plan-navigate.json", "agent-plan.schema.json"],
+  ["effect-speech.json", "effect.schema.json"],
+  ["skill-crossing-advisory.json", "skill-manifest.schema.json"],
 ]);
+
+const expectedSkillIds = [
+  "navigate_to",
+  "inspect_scene",
+  "read_text",
+  "find_target",
+  "follow_up",
+  "crossing_advisory",
+  "obstacle_advisory",
+  "menu_structuring",
+];
 
 async function loadJson(path) {
   return JSON.parse(await readFile(path, "utf8"));
@@ -77,6 +92,26 @@ await assertReferencedFiles(capabilityRegistry.capabilities, capabilityRegistryP
   "voice_templates",
 ]);
 
+const skillRegistry = await loadJson(skillRegistryPath);
+const skillRegistryValidator = ajv.getSchema(
+  "https://leqi-ai-glasses.dev/contracts/skill-registry.schema.json",
+);
+const candidateSkills = Array.isArray(skillRegistry?.skills) ? skillRegistry.skills : [];
+for (const skill of candidateSkills) {
+  if (!ajv.validateSchema(skill?.parameters_schema)) {
+    throw new Error(
+      `Skill ${skill?.skill_id ?? "<unknown>"} has an invalid parameters_schema:\n${formatErrors(ajv.errors)}`,
+    );
+  }
+}
+if (!skillRegistryValidator(skillRegistry)) {
+  throw new Error(`Skill registry is invalid:\n${formatErrors(skillRegistryValidator.errors)}`);
+}
+const skillIds = skillRegistry.skills.map(({ skill_id }) => skill_id);
+if (JSON.stringify(skillIds) !== JSON.stringify(expectedSkillIds)) {
+  throw new Error(`Skill registry must contain exactly: ${expectedSkillIds.join(", ")}.`);
+}
+
 const toolRegistry = await loadJson(toolRegistryPath);
 const toolRegistryValidator = ajv.getSchema(
   "https://leqi-ai-glasses.dev/contracts/tool-registry.schema.json",
@@ -98,5 +133,5 @@ for (const [exampleName, schemaName] of exampleSchemas) {
 
 console.log(
   `Validated ${schemas.length} schemas, ${exampleSchemas.size} examples, ` +
-    `${capabilityRegistry.capabilities.length} capabilities, and ${toolRegistry.tools.length} tools.`,
+    `${capabilityRegistry.capabilities.length} capabilities, ${skillRegistry.skills.length} skills, and ${toolRegistry.tools.length} tools.`,
 );

@@ -1,0 +1,17 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <queries>
+        <package android:name="com.rokid.sprite.aiapp"/>
+        <intent>
+            <action android:name="com.rokid.sprite.aiapp.externalapp.AUTHORIZATION"/>
+        </intent>
+    </queries>
+    <application android:label="乐奇双端实验·CXR-L" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <activity android:name=".PhoneLActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

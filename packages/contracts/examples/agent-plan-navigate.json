@@ -1,0 +1,25 @@
+{
+  "schema_version": "1.0",
+  "plan_id": "plan-navigate-001",
+  "session_id": "session-001",
+  "event_id": "event-speech-001",
+  "goal": "navigate to the People's Hospital",
+  "actions": [
+    {
+      "kind": "tool_call",
+      "skill_id": "navigate_to",
+      "tool_id": "navigation.search_destination",
+      "arguments": { "query": "People's Hospital" }
+    },
+    {
+      "kind": "speak",
+      "text": "I am looking up People's Hospital.",
+      "priority": "normal"
+    },
+    {
+      "kind": "wait",
+      "event_types": ["destination.candidates_listed"]
+    }
+  ],
+  "created_at": "2026-09-22T00:00:00Z"
+}

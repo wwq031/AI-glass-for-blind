@@ -1,0 +1,29 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.leqi.experiment.glassesbt'
+    compileSdk { version = release(36) { it.minorApiLevel = 1 } }
+    defaultConfig {
+        applicationId 'com.leqi.experiment.glassesbt'
+        minSdk 32
+        targetSdk 32
+        versionCode 1
+        versionName '0.1.0'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main.java.srcDirs += '../../device-experiment/android/common/src/main/java'
+}
+
+// Kotlin 2.x 默认 jvmTarget 跟随 JDK（此处为 21），与上面的 Java 17 不一致，
+// 会让 compileDebugKotlin 与 compileDebugJavaWithJavac 的校验直接失败。显式对齐到 17。
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}

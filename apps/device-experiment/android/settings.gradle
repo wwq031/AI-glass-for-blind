@@ -1,0 +1,19 @@
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+dependencyResolutionManagement {
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+    repositories {
+        google()
+        mavenCentral()
+        maven { url = uri('https://maven.rokid.com/repository/maven-public/') }
+    }
+}
+rootProject.name = 'LeqiDeviceExperiment'
+include ':phone-bt', ':glasses-bt'
+project(':phone-bt').projectDir = file('../../phone-companion/android')
+project(':glasses-bt').projectDir = file('../../glasses-agent/android')
