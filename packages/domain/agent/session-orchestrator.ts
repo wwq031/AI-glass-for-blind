@@ -1,11 +1,40 @@
-import { buildAgentTurnInput } from "./context-builder.ts";
+import { buildAgentTurnInput, sanitizeForModel } from "./context-builder.ts";
 import { isCrossingApproachEvent, skillContextFromNavigationEvent } from "./navigation-trigger.ts";
 import { adviseCrossing, adviseCrossingFromResult } from "../policies/crossing-advisory.ts";
-import type { LlmAgent, AgentSessionView } from "./llm-agent.ts";
+import type { AgentConversationTurn, LlmAgent, AgentSessionView } from "./llm-agent.ts";
 import { validatePlan, type ExecutionPermissions, type PlanValidation } from "./plan-validator.ts";
 import { TaskRunner } from "./task-runner.ts";
 import type { ToolGateway } from "./tool-gateway.ts";
-import type { AgentEvent, Effect, SkillRegistry, ToolResult } from "./types.ts";
+import type { AgentEvent, AgentPlan, Effect, SkillRegistry, ToolResult } from "./types.ts";
+
+/**
+ * The conversation trace is a bounded, sanitized summary of what happened in this session, so the
+ * next utterance is planned as a continuation instead of a cold start. Only text enters it: a user
+ * utterance, the goal a turn aimed at, what was spoken, and what a tool established.
+ */
+const CONVERSATION_TURN_LIMIT = 24;
+const CONVERSATION_TEXT_LIMIT = 400;
+
+function conversationText(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const text = value.trim();
+  return text.length === 0 ? undefined : text.slice(0, CONVERSATION_TEXT_LIMIT);
+}
+
+function appendConversation(view: AgentSessionView, kind: AgentConversationTurn["kind"], text: string): void {
+  const conversation = view.conversation ?? (view.conversation = []);
+  const previous = conversation.at(-1);
+  if (previous && previous.kind === kind && previous.text === text) return;
+  conversation.push({ kind, text });
+  while (conversation.length > CONVERSATION_TURN_LIMIT) conversation.shift();
+}
+
+/** Forgets the conversation and everything derived from it; a cancel or a disconnect ends it. */
+function clearConversation(view: AgentSessionView): void {
+  view.conversation = undefined;
+  view.goal = undefined;
+  view.pendingQuestion = undefined;
+}
 
 export interface AgentHandleOutput {
   effects: Effect[];
@@ -118,6 +147,7 @@ export class SessionOrchestrator {
       session.pendingCrossingEvidenceStale = undefined;
       session.crossingPending = false;
       session.crossingContext = undefined;
+      session.view.navigation = undefined;
       return { effects: [{ effectId: `${pending.eventId}:crossing-advisory`, sessionId: event.sessionId,
         type: "speech", createdAt, payload: { text: advisory.speech, action: advisory.action, priority: "critical" } }], results: [] };
     }
@@ -136,9 +166,19 @@ export class SessionOrchestrator {
         session.crossingPending = true;
         session.pendingCrossingEvidenceStale = undefined;
         const navigation = navigationContext.navigation;
+        session.view.navigation = navigation;
         session.crossingContext = navigation?.intersectionId !== undefined && navigation.travelHeadingDeg !== undefined ?
           { intersection_id: navigation.intersectionId, travel_heading_deg: navigation.travelHeadingDeg } : undefined;
       } else if (this.isUserCrossingRequest(canonicalEvent)) session.crossingPending = true;
+      // A user utterance joins the trace before planning, so the model plans it as a continuation.
+      // Answering a pending question retires it.
+      if (canonicalEvent.source === "user") {
+        const spoken = conversationText(canonicalEvent.payload.transcript);
+        if (spoken !== undefined) {
+          appendConversation(session.view, "user", spoken);
+          session.view.pendingQuestion = undefined;
+        }
+      }
       const input = buildAgentTurnInput({
         event: canonicalEvent, session: { ...session.view, ...(navigationContext.navigation ? { navigation: navigationContext.navigation } : {}) }, skills: this.options.skills.list(),
         recentResults: canonicalEvent.type === "tool.results" && Array.isArray(canonicalEvent.payload.results)
@@ -149,10 +189,15 @@ export class SessionOrchestrator {
       const proposesCrossing = Array.isArray(plan?.actions) && plan.actions.some((action) =>
         action?.kind === "tool_call" && action.skillId === "crossing_advisory");
       if (proposesCrossing) session.crossingPending = true;
-      const validation = validatePlan(this.options.skills, plan, permissions);
+      // A navigation trigger can request confirmation, but it cannot carry camera consent.
+      // Consent must arrive with a distinct user event, after the reminder has been delivered.
+      const turnPermissions: ExecutionPermissions = navigationContext.urgentSkillId
+        ? { ...permissions, observationConsent: "none" }
+        : permissions;
+      const validation = validatePlan(this.options.skills, plan, turnPermissions);
       if (!validation.ok) {
         if (session.crossingPending && proposesCrossing && validation.code === "consent_required") {
-          return this.finishUnconfirmedCrossing(canonicalEvent, session, { code: validation.code, actionIndex: validation.actionIndex });
+          return this.waitForCrossingConfirmation(canonicalEvent, session, { code: validation.code, actionIndex: validation.actionIndex });
         }
         return this.rejectPlan(canonicalEvent, session, { code: validation.code, actionIndex: validation.actionIndex });
       }
@@ -170,15 +215,24 @@ export class SessionOrchestrator {
       }
       if (session.crossingPending && plan.actions.every((action) => action.kind === "wait")) {
         session.view.activePlanId = plan.planId;
-        return this.finishUnconfirmedCrossing(canonicalEvent, session);
+        return this.waitForCrossingConfirmation(canonicalEvent, session);
       }
       // Commit before tool execution: a thrown gateway may already have caused an external side effect.
       session.view.lastSequence = canonicalEvent.sequence;
       session.view.activePlanId = plan.planId;
       session.view.goal = plan.goal;
-      const output = await this.runner.run(plan, permissions, () => session.epoch === epoch, session.crossingContext);
+      const output = await this.runner.run(plan, turnPermissions, () => session.epoch === epoch, session.crossingContext);
       if (session.epoch !== epoch) {
         return { effects: [], results: output.results, rejection: { code: "interrupted" } };
+      }
+      this.recordTurn(session, plan, output);
+      // A question the device really asked owns the floor for the rest of the turn. Its answer is the
+      // next user Event, not a ToolResult the model reads back: feeding it back would make the model
+      // speak over the question it just asked, on a window the user is still answering into.
+      if (this.asksForAnAnswer(plan, output)) {
+        session.pendingFeedback = undefined;
+        session.pendingCrossingCallId = undefined;
+        return output;
       }
       if (output.results.length === 0) {
         session.pendingFeedback = undefined;
@@ -203,6 +257,70 @@ export class SessionOrchestrator {
     }
   }
 
+  /**
+   * Keeps the trace of one committed turn: what the turn aimed at, what was actually said, and what
+   * a tool actually established. Spoken text and tool facts enter it so a later utterance can be
+   * planned against what the user already heard, never against a guess about it.
+   */
+  private recordTurn(session: SessionRecord, plan: AgentPlan, output: AgentHandleOutput): void {
+    const goal = conversationText(plan.goal);
+    if (goal !== undefined) appendConversation(session.view, "goal", goal);
+    for (const effect of output.effects) {
+      if (effect.type !== "speech") continue;
+      const spoken = conversationText(effect.payload.text);
+      if (spoken !== undefined) appendConversation(session.view, "agent", spoken);
+    }
+    for (const result of output.results) {
+      // History is a summary, not evidence. A malformed entry is skipped here so one bad fact list
+      // cannot crash the turn; the raw result is left exactly as the gateway reported it, so the
+      // policies that must fail closed on malformed evidence still see it whole.
+      const facts: unknown = result.facts;
+      for (const fact of Array.isArray(facts) ? facts : []) {
+        if (fact === null || typeof fact !== "object") continue;
+        const { name: rawName, value: rawValue } = fact as { name?: unknown; value?: unknown };
+        const name = conversationText(rawName);
+        if (name === undefined) continue;
+        const value = typeof rawValue === "string" ? rawValue : JSON.stringify(rawValue);
+        appendConversation(session.view, "fact", `${name}: ${value ?? ""}`);
+      }
+      // A destination search answers with candidates the user is about to choose between. The
+      // identifiers are kept so that the next utterance — the user's actual choice — can be planned
+      // against the same list, instead of against a list the model saw once and can no longer name.
+      if (result.toolId === "navigation.search_destination" && result.status === "succeeded") {
+        const candidates = result.output.candidates;
+        const listed = (Array.isArray(candidates) ? candidates : []).flatMap((candidate) => {
+          if (candidate === null || typeof candidate !== "object") return [];
+          const { candidate_id: id, name } = candidate as Record<string, unknown>;
+          return typeof id === "string" && id && typeof name === "string" && name ? [`${id} ${name}`] : [];
+        });
+        if (listed.length) appendConversation(session.view, "fact", `候选地点: ${listed.join("; ")}`);
+      }
+    }
+    const asked = plan.actions.find((action) =>
+      action.kind === "tool_call" && action.toolId === "speech.ask_user");
+    if (asked && asked.kind === "tool_call") {
+      const question = conversationText(asked.arguments.prompt_template) ??
+        conversationText(asked.arguments.question);
+      if (question !== undefined) session.view.pendingQuestion = question;
+    }
+  }
+
+  /**
+   * True when the turn ended on a question the user is expected to answer. Only a question the device
+   * actually asked counts: if the window never opened, the model has to see the failure and decide
+   * again, exactly like any other ToolResult.
+   */
+  private asksForAnAnswer(plan: AgentPlan, output: AgentHandleOutput): boolean {
+    for (let index = plan.actions.length - 1; index >= 0; index--) {
+      const action = plan.actions[index];
+      if (!action || action.kind !== "tool_call") continue;
+      if (action.toolId !== "speech.ask_user") return false;
+      const asked = output.results.find((result) => result.callId === `${plan.planId}:${index}`);
+      return asked?.status === "succeeded" || asked?.status === "partial";
+    }
+    return false;
+  }
+
   private urgentStatus(event: AgentEvent): "cancelled" | "help_requested" | "device_disconnected" | undefined {
     if (event.source === "device" && event.type === "device.disconnected") return "device_disconnected";
     if (event.source !== "user") return undefined;
@@ -224,6 +342,10 @@ export class SessionOrchestrator {
     session.pendingCrossingEvidenceStale = undefined;
     session.crossingPending = false;
     session.crossingContext = undefined;
+    session.view.navigation = undefined;
+    // An explicit cancel or a disconnect revokes the conversation as well as the plan: nothing
+    // planned against it may be revived by a result or a final announcement that arrives later.
+    if (status !== "help_requested") clearConversation(session.view);
     const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
     const effects: Effect[] = [{
       effectId: `${event.eventId}:session`, sessionId: event.sessionId,
@@ -292,8 +414,26 @@ export class SessionOrchestrator {
     session.pendingCrossingEvidenceStale = undefined;
     session.pendingFeedback = undefined;
     session.crossingContext = undefined;
+    session.view.navigation = undefined;
     return { effects: [this.unconfirmedCrossingEffect(event)],
       results: [], ...(rejection ? { rejection } : {}) };
+  }
+
+  private waitForCrossingConfirmation(
+    event: AgentEvent, session: SessionRecord, rejection?: AgentHandleOutput["rejection"],
+  ): AgentHandleOutput {
+    session.view.lastSequence = event.sequence;
+    session.pendingFeedback = undefined;
+    session.pendingCrossingCallId = undefined;
+    session.pendingCrossingEvidenceStale = undefined;
+    session.crossingPending = true;
+    const createdAt = (this.options.now ?? (() => new Date().toISOString()))();
+    return {
+      effects: [{ effectId: `${event.eventId}:crossing-confirmation`, sessionId: event.sessionId,
+        type: "speech", createdAt,
+        payload: { text: "前方路口，需要检查时请按键或说“检查”。请先停下。", action: "cannot_determine", priority: "critical" } }],
+      results: [], ...(rejection ? { rejection } : {}),
+    };
   }
 
   private unconfirmedCrossingEffect(event: AgentEvent): Effect {

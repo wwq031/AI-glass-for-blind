@@ -13,13 +13,17 @@ const nav = (type: string, sequence: number): AgentEvent => ({
   payload: type === "navigation.intersection_approaching" ?
     { intersection_id: "junction-7", distance_m: 18, travel_heading_deg: 90 } : { route_state: "active" },
 });
+const userConfirm = (sequence: number): AgentEvent => ({
+  eventId: `user-${sequence}`, sessionId: "walk-1", sequence, source: "user", type: "user.crossing_query",
+  occurredAt: at, payload: { input_kind: "button" },
+});
 const plan = (eventId: string, actions: AgentPlan["actions"]): AgentPlan => ({
   planId: `p-${eventId}`, sessionId: "walk-1", eventId, goal: "路口辅助", actions, createdAt: at,
 });
 
-test("navigation event triggers planned consented observation, then policy owns uncertain crossing speech", async () => {
+test("navigation reminder waits for button confirmation before observation and policy speech", async () => {
   const result: ToolResult = {
-    callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request", status: "partial", completedAt: at,
+    callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request", status: "partial", completedAt: at,
     output: { capability_id: "vision.traffic_signal" },
     facts: [
       { name: "traffic_signal.state", value: "unknown", confidence: "medium", validUntil: "2026-09-22T10:00:15.000Z" },
@@ -30,6 +34,8 @@ test("navigation event triggers planned consented observation, then policy owns 
   const agent = new RecordedLlmAgent([
     plan("nav-1", [{ kind: "speak", text: "导航已开始。", priority: "normal" }]),
     plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("user-3", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
       arguments: { capability_id: "vision.traffic_signal" } }]),
   ]);
   const tools = new RecordedToolGateway([result]);
@@ -43,31 +49,37 @@ test("navigation event triggers planned consented observation, then policy owns 
   const approaching = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
   assert.equal(agent.inputs[1]?.session.urgentSkillId, "crossing_advisory");
   assert.deepEqual(agent.inputs[1]?.session.navigation, { intersectionId: "junction-7", distanceM: 18, travelHeadingDeg: 90 });
+  assert.match(String(approaching.effects[0]?.payload.text), /按键|检查/);
+  assert.equal(tools.calls.length, 0, "navigation permissions cannot substitute for a user confirmation event");
+
+  const confirmed = await core.handle(userConfirm(3), { observationConsent: "explicit" });
   assert.equal(tools.calls.length, 1);
   assert.equal(tools.calls[0]?.origin, "policy");
   assert.equal(tools.calls[0]?.toolId, "observation.request");
-  assert.deepEqual(approaching.effects, []);
-  assert.equal(approaching.results[0]?.facts[0]?.value, "unknown");
+  assert.deepEqual(confirmed.effects, []);
+  assert.equal(confirmed.results[0]?.facts[0]?.value, "unknown");
 
-  const feedback = approaching.followUpEvents?.[0];
+  const feedback = confirmed.followUpEvents?.[0];
   assert.equal(feedback?.type, "tool.results");
   const advice = await core.handle(feedback!);
   assert.equal(advice.effects.length, 1);
   assert.equal(advice.effects[0]?.type, "speech");
   assert.equal(advice.effects[0]?.payload.action, "cannot_determine");
   assert.match(String(advice.effects[0]?.payload.text), /请先停下/);
-  assert.equal(agent.inputs.length, 2, "model must not override policy on crossing result turn");
+  assert.equal(agent.inputs.length, 3, "model must not override policy on crossing result turn");
 });
 
 test("failed crossing observation produces conservative speech without model improvisation", async () => {
-  const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }])]);
-  const tools = new RecordedToolGateway([{ callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request", status: "failed", completedAt: at, output: {}, facts: [] }]);
+  const action = [{ kind: "tool_call" as const, skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }];
+  const agent = new RecordedLlmAgent([plan("nav-2", action), plan("user-3", action)]);
+  const tools = new RecordedToolGateway([{ callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request", status: "failed", completedAt: at, output: {}, facts: [] }]);
   const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
-  const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  await core.handle(nav("navigation.intersection_approaching", 2));
+  const first = await core.handle(userConfirm(3), { observationConsent: "explicit" });
   const advice = await core.handle(first.followUpEvents![0]!);
   assert.equal(advice.effects[0]?.payload.action, "cannot_determine");
   assert.match(String(advice.effects[0]?.payload.text), /请先停下/);
-  assert.equal(agent.inputs.length, 1);
+  assert.equal(agent.inputs.length, 2);
 });
 
 test("crossing context rejects model speech and completion before observation", async () => {
@@ -94,9 +106,9 @@ test("crossing context rejects pre-result model speech even when observation is 
   const tools = new RecordedToolGateway([]);
   const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
   const out = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
-  assert.equal(out.rejection?.code, "policy_required");
+  assert.equal(out.rejection?.code, "consent_required");
   assert.equal(out.effects.length, 1);
-  assert.notEqual(out.effects[0]?.payload.text, "现在可以过马路。");
+  assert.match(String(out.effects[0]?.payload.text), /按键|检查/);
   assert.deepEqual(tools.calls, []);
 });
 
@@ -121,32 +133,40 @@ test("normalized user.crossing_query activates the guard without transcript matc
   assert.match(String(out.effects[0]?.payload.text), /请先停下/);
 });
 
-test("explicitly declined capture closes crossing with conservative policy speech and permits later arrival", async () => {
+test("approach without consent asks for confirmation and route progress retires the crossing context", async () => {
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
-    plan("nav-3", [{ kind: "speak", text: "已经抵达目的地。", priority: "normal" }]),
+    plan("nav-4", [{ kind: "speak", text: "已经抵达目的地。", priority: "normal" }]),
   ]);
   const tools = new RecordedToolGateway([]);
   const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
   const declined = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "none" });
   assert.equal(declined.rejection?.code, "consent_required");
   assert.equal(declined.effects[0]?.payload.action, "cannot_determine");
-  assert.match(String(declined.effects[0]?.payload.text), /请先停下/);
+  assert.match(String(declined.effects[0]?.payload.text), /按键|检查/);
   assert.deepEqual(tools.calls, []);
-  const arrived = await core.handle(nav("navigation.arrived", 3));
+  const retired = await core.handle(nav("navigation.arrived", 3));
+  assert.equal(retired.rejection?.code, "crossing_context_retired");
+  assert.equal(retired.effects[0]?.payload.action, "cannot_determine");
+  const arrived = await core.handle(nav("navigation.arrived", 4));
   assert.equal(arrived.effects[0]?.payload.text, "已经抵达目的地。");
 });
 
-test("wait-only crossing plan closes context and route progress retires rejected crossing feedback", async () => {
+test("wait-only crossing plan keeps confirmation pending until route progress retires it", async () => {
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "wait", eventTypes: ["navigation.arrived"] }]),
-    plan("nav-3", [{ kind: "speak", text: "路线继续。", priority: "normal" }]),
+    plan("nav-4", [{ kind: "speak", text: "路线继续。", priority: "normal" }]),
   ]);
   const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([]), skills: createP0SkillRegistry(), now });
   const waiting = await core.handle(nav("navigation.intersection_approaching", 2));
   assert.equal(waiting.effects[0]?.payload.action, "cannot_determine");
+  assert.match(String(waiting.effects[0]?.payload.text), /按键|检查/);
   const progressed = await core.handle(nav("navigation.approaching_maneuver", 3));
-  assert.equal(progressed.effects[0]?.payload.text, "路线继续。");
+  assert.equal(progressed.rejection?.code, "crossing_context_retired");
+  assert.equal(agent.inputs.length, 1);
+  const resumed = await core.handle(nav("navigation.approaching_maneuver", 4));
+  assert.equal(resumed.effects[0]?.payload.text, "路线继续。");
+  assert.equal(agent.inputs.length, 2);
 });
 
 test("route progress retires unresolved crossing only with policy stop and requires a new-sequence resubmission", async () => {
@@ -173,30 +193,34 @@ test("route progress cannot discard pending crossing ToolResult or elicit model 
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
       arguments: { capability_id: "vision.traffic_signal" } }]),
-    plan("nav-4", [{ kind: "speak", text: "导航继续。", priority: "normal" }]),
+    plan("user-3", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-5", [{ kind: "speak", text: "导航继续。", priority: "normal" }]),
   ]);
-  const tools = new RecordedToolGateway([{ callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+  const tools = new RecordedToolGateway([{ callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request",
     status: "partial", completedAt: at, output: {}, facts: [{ name: "traffic_signal.state", value: "unknown", confidence: "low", validUntil: "2026-09-22T10:00:15.000Z" }] }]);
   const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
-  const requested = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
-  const competing = await core.handle(nav("navigation.approaching_maneuver", 3));
+  await core.handle(nav("navigation.intersection_approaching", 2));
+  const requested = await core.handle(userConfirm(3), { observationConsent: "explicit" });
+  const competing = await core.handle(nav("navigation.approaching_maneuver", 4));
   assert.equal(competing.rejection?.code, "pending_feedback");
   assert.equal(competing.effects[0]?.payload.action, "cannot_determine");
-  assert.equal(agent.inputs.length, 1);
+  assert.equal(agent.inputs.length, 2);
   const advisory = await core.handle(requested.followUpEvents![0]!);
   assert.equal(advisory.effects[0]?.payload.action, "cannot_determine");
-  assert.equal(core.snapshot("walk-1").lastSequence, 3);
-  const stale = await core.handle(nav("navigation.approaching_maneuver", 3));
+  assert.equal(core.snapshot("walk-1").lastSequence, 4);
+  const stale = await core.handle(nav("navigation.approaching_maneuver", 4));
   assert.equal(stale.rejection?.code, "stale_event");
-  const resumed = await core.handle(nav("navigation.approaching_maneuver", 4));
+  const resumed = await core.handle(nav("navigation.approaching_maneuver", 5));
   assert.equal(resumed.effects[0]?.payload.text, "导航继续。");
 });
 
 test("route-invalidating events stale pending crossing evidence without consuming canonical feedback", async () => {
   for (const routeType of ["navigation.off_route", "navigation.rerouting", "navigation.stopped", "navigation.arrived", "navigation.location_quality_changed"]) {
-    const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
-      arguments: { capability_id: "vision.traffic_signal" } }])]);
-    const tools = new RecordedToolGateway([{ callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+    const action = [{ kind: "tool_call" as const, skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }];
+    const agent = new RecordedLlmAgent([plan("nav-2", action), plan("user-3", action)]);
+    const tools = new RecordedToolGateway([{ callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request",
       status: "succeeded", completedAt: at, output: { capability_id: "vision.traffic_signal", context: { intersection_id: "junction-7", travel_heading_deg: 90 } },
       facts: [
         { name: "traffic_signal.state", value: "green", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
@@ -204,20 +228,21 @@ test("route-invalidating events stale pending crossing evidence without consumin
         { name: "vehicle.activity", value: "no", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
       ] }]);
     const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
-    const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
-    const invalidating = await core.handle(nav(routeType, 3));
+    await core.handle(nav("navigation.intersection_approaching", 2));
+    const first = await core.handle(userConfirm(3), { observationConsent: "explicit" });
+    const invalidating = await core.handle(nav(routeType, 4));
     assert.equal(invalidating.rejection?.code, "pending_feedback", routeType);
-    assert.equal(core.snapshot("walk-1").lastSequence, 2);
+    assert.equal(core.snapshot("walk-1").lastSequence, 3);
     const feedback = await core.handle(first.followUpEvents![0]!);
     assert.equal(feedback.effects[0]?.payload.action, "cannot_determine", routeType);
     assert.match(String(feedback.effects[0]?.payload.text), /请先停下/);
-    assert.equal(agent.inputs.length, 1);
+    assert.equal(agent.inputs.length, 2);
   }
 });
 
 test("a new crossing event stales an older pending green result and can be resubmitted", async () => {
   const oldContext = { intersection_id: "junction-7", travel_heading_deg: 90 };
-  const green: ToolResult = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request", status: "succeeded",
+  const green: ToolResult = { callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request", status: "succeeded",
     completedAt: at, output: { capability_id: "vision.traffic_signal", context: oldContext }, facts: [
       { name: "traffic_signal.state", value: "green", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
       { name: "traffic_signal.direction_match", value: "yes", confidence: "high", validUntil: "2026-09-22T10:00:15.000Z" },
@@ -225,20 +250,25 @@ test("a new crossing event stales an older pending green result and can be resub
     ] };
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
-    plan("nav-4", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("user-3", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-5", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("user-6", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request", arguments: { capability_id: "vision.traffic_signal" } }]),
   ]);
-  const tools = new RecordedToolGateway([green, { ...green, callId: "p-nav-4:0", status: "partial", facts: [] }]);
+  const tools = new RecordedToolGateway([green, { ...green, callId: "p-user-6:0", status: "partial", facts: [] }]);
   const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
-  const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  await core.handle(nav("navigation.intersection_approaching", 2));
+  const first = await core.handle(userConfirm(3), { observationConsent: "explicit" });
   const nextPayload = { intersection_id: "junction-8", distance_m: 12, travel_heading_deg: 180 };
-  const competing = await core.handle({ ...nav("navigation.crosswalk_approaching", 3), payload: nextPayload });
+  const competing = await core.handle({ ...nav("navigation.crosswalk_approaching", 4), payload: nextPayload });
   assert.equal(competing.rejection?.code, "pending_feedback");
-  assert.equal(core.snapshot("walk-1").lastSequence, 2);
+  assert.equal(core.snapshot("walk-1").lastSequence, 3);
   const oldAdvice = await core.handle(first.followUpEvents![0]!);
   assert.equal(oldAdvice.effects[0]?.payload.action, "cannot_determine");
-  assert.equal(agent.inputs.length, 1);
-  const second = await core.handle({ ...nav("navigation.crosswalk_approaching", 4), payload: nextPayload }, { observationConsent: "explicit" });
-  assert.equal(agent.inputs[1]?.session.navigation?.intersectionId, "junction-8");
+  assert.equal(agent.inputs.length, 2);
+  const secondReminder = await core.handle({ ...nav("navigation.crosswalk_approaching", 5), payload: nextPayload }, { observationConsent: "explicit" });
+  assert.match(String(secondReminder.effects[0]?.payload.text), /按键|检查/);
+  const second = await core.handle(userConfirm(6), { observationConsent: "explicit" });
+  assert.equal(agent.inputs[3]?.session.navigation?.intersectionId, "junction-8");
   assert.deepEqual(tools.calls[1]?.arguments.context, { intersection_id: "junction-8", travel_heading_deg: 180 });
   assert.equal(second.followUpEvents?.[0]?.type, "tool.results");
 });
@@ -247,17 +277,20 @@ test("malformed observation facts resolve pending crossing conservatively withou
   const agent = new RecordedLlmAgent([
     plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
       arguments: { capability_id: "vision.traffic_signal" } }]),
-    plan("nav-4", [{ kind: "speak", text: "路线继续。", priority: "normal" }]),
+    plan("user-3", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal" } }]),
+    plan("nav-5", [{ kind: "speak", text: "路线继续。", priority: "normal" }]),
   ]);
-  const malformed = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request", status: "succeeded",
+  const malformed = { callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request", status: "succeeded",
     completedAt: at, output: { capability_id: "vision.traffic_signal", context: { intersection_id: "junction-7", travel_heading_deg: 90 } },
     facts: [null] } as ToolResult;
   const core = new SessionOrchestrator({ agent, tools: new RecordedToolGateway([malformed]), skills: createP0SkillRegistry(), now });
-  const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+  await core.handle(nav("navigation.intersection_approaching", 2));
+  const first = await core.handle(userConfirm(3), { observationConsent: "explicit" });
   const advice = await core.handle(first.followUpEvents![0]!);
   assert.equal(advice.effects[0]?.payload.action, "cannot_determine");
-  assert.equal(core.snapshot("walk-1").lastSequence, 3);
-  const continued = await core.handle(nav("navigation.approaching_maneuver", 4));
+  assert.equal(core.snapshot("walk-1").lastSequence, 4);
+  const continued = await core.handle(nav("navigation.approaching_maneuver", 5));
   assert.equal(continued.effects[0]?.payload.text, "路线继续。");
 });
 
@@ -283,7 +316,7 @@ test("positive crossing advice requires canonical navigation context and matchin
     { name: "traffic_signal.direction_match", value: "yes", confidence: "high" as const, validUntil: "2026-09-22T10:00:15.000Z" },
     { name: "vehicle.activity", value: "no", confidence: "high" as const, validUntil: "2026-09-22T10:00:15.000Z" },
   ];
-  const baseline: ToolResult = { callId: "p-nav-2:0", sessionId: "walk-1", toolId: "observation.request",
+  const baseline: ToolResult = { callId: "p-user-3:0", sessionId: "walk-1", toolId: "observation.request",
     status: "succeeded", completedAt: at, output: { capability_id: "vision.traffic_signal", context: expectedContext }, facts };
   const cases: Array<[string, ToolResult, string]> = [
     ["valid", baseline, "proceed_with_caution"],
@@ -297,11 +330,13 @@ test("positive crossing advice requires canonical navigation context and matchin
     ["conflicting signal facts", { ...baseline, facts: [...facts, { ...facts[0]!, value: "red" }] }, "cannot_determine"],
   ];
   for (const [label, result, expected] of cases) {
-    const agent = new RecordedLlmAgent([plan("nav-2", [{ kind: "tool_call", skillId: "crossing_advisory", toolId: "observation.request",
-      arguments: { capability_id: "vision.traffic_signal", context: { intersection_id: "model-forged", travel_heading_deg: 1 } } }])]);
+    const action = [{ kind: "tool_call" as const, skillId: "crossing_advisory", toolId: "observation.request",
+      arguments: { capability_id: "vision.traffic_signal", context: { intersection_id: "model-forged", travel_heading_deg: 1 } } }];
+    const agent = new RecordedLlmAgent([plan("nav-2", action), plan("user-3", action)]);
     const tools = new RecordedToolGateway([result]);
     const core = new SessionOrchestrator({ agent, tools, skills: createP0SkillRegistry(), now });
-    const first = await core.handle(nav("navigation.intersection_approaching", 2), { observationConsent: "explicit" });
+    await core.handle(nav("navigation.intersection_approaching", 2));
+    const first = await core.handle(userConfirm(3), { observationConsent: "explicit" });
     assert.deepEqual(tools.calls[0]?.arguments.context, expectedContext, `${label}: context must come from navigation`);
     const advice = await core.handle(first.followUpEvents![0]!);
     assert.equal(advice.effects[0]?.payload.action, expected, label);

@@ -30,11 +30,20 @@ function sanitize(value: unknown, ancestors: WeakSet<object> = new WeakSet()): u
   return value;
 }
 
+/**
+ * The one sanitizer every model-bound payload passes through. A caller that keeps state which will
+ * later be handed to the model — the conversation trace, for instance — runs it through here as
+ * well, so nothing binary or secret is ever held, not only never sent.
+ */
+export function sanitizeForModel<T>(value: T): T {
+  return sanitize(value) as T;
+}
+
 export function buildAgentTurnInput(
   input: AgentTurnInput,
   urgentSkillId?: string,
 ): AgentTurnInput {
-  const context = sanitize(input) as AgentTurnInput;
+  const context = sanitizeForModel(input);
   if (urgentSkillId !== undefined) context.session.urgentSkillId = urgentSkillId;
   return context;
 }
