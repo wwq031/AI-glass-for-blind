@@ -1,0 +1,36 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- 前台服务要在通知栏露面；没有这个权限服务照常跑，只是用户看不到状态和“停止”。 -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <!-- Android 14 起前台服务类型必须声明配套权限，否则 startForeground 直接抛异常。
+         只声明真正会用的两类：连眼镜（蓝牙通道）和定位（地图导航）。
+         服务在声明类型前会先看权限有没有授予，缺哪个就不声明哪个。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <application android:label="乐奇助盲导航·手机" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        <meta-data android:name="com.amap.api.v2.apikey" android:value="${amapAndroidKey}"/>
+        <service android:name="com.amap.api.location.APSService"/>
+        <uses-native-library android:name="libvndksupport.so" android:required="false"/>
+        <uses-native-library android:name="libOpenCL.so" android:required="false"/>
+        <!-- 运行时宿主：Agent WebView、本地模型、离线语音、导航、蓝牙通道都活在它里面。
+             界面销毁重建不影响它；START_NOT_STICKY，被系统回收后不会被自动拉起。 -->
+        <service
+            android:name=".AgentHostService"
+            android:exported="false"
+            android:foregroundServiceType="connectedDevice|location"/>
+        <activity android:name=".AgentProofActivity" android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN"/>
+                <category android:name="android.intent.category.LAUNCHER"/>
+            </intent-filter>
+        </activity>
+    </application>
+</manifest>

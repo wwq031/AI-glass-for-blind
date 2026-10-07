@@ -18,6 +18,18 @@
       "properties": { "candidate_id": { "type": "string" }, "name": { "type": "string" } },
       "additionalProperties": false
     },
+    "goal": { "type": "string", "minLength": 1 },
+    "active_plan_id": { "type": "string", "minLength": 1 },
+    "pending_question": { "type": "string", "minLength": 1 },
+    "facts": {
+      "type": "array",
+      "items": { "$ref": "fact.schema.json" }
+    },
+    "active_skills": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[a-z][a-z0-9_]*$" }
+    },
     "pending_observation": {
       "type": "object",
       "required": ["request_id", "capability_id"],

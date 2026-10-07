@@ -1,0 +1,64 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+}
+
+def localValues = new Properties()
+def localFile = rootProject.file('local.properties')
+if (localFile.exists()) {
+    localFile.withInputStream { stream -> localValues.load(stream) }
+}
+
+android {
+    namespace 'com.leqi.experiment.phonebt'
+    compileSdk { version = release(36) { it.minorApiLevel = 1 } }
+    defaultConfig {
+        applicationId 'com.leqi.experiment.phonebt'
+        minSdk 31
+        targetSdk 35
+        versionCode 1
+        versionName '0.1.0'
+        manifestPlaceholders = [amapAndroidKey: localValues.getProperty('AMAP_ANDROID_KEY', '')]
+        // 只带 arm64-v8a：高德、LiteRT-LM 和 sherpa-onnx 都塞了多套 .so，全打进去接近 350 MB，
+        // 而本次实机只有 arm64 的荣耀手机。需要别的 ABI 时把这行删掉重打即可。
+        ndk { abiFilters 'arm64-v8a' }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets.main.java.srcDirs += '../../device-experiment/android/common/src/main/java'
+}
+
+// Kotlin 2.x 默认 jvmTarget 跟随 JDK（此处为 21），与上面的 Java 17 不一致，
+// 会让 compileDebugKotlin 与 compileDebugJavaWithJavac 的校验直接失败。显式对齐到 17。
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+dependencies {
+    // 钉住本地缓存里已有的那一版：latest.integration 每次构建都可能拉到不同的东西，
+    // 基线就不可复现了。要升级必须是一次单独的、说清楚的改动。
+    implementation 'com.amap.api:navi-3dmap-location-search:11.3.100_3dmap11.3.100_loc11.3.000_sea9.8.1'
+    implementation 'com.google.ai.edge.litertlm:litertlm-android:0.17.1'
+    // 本地中文离线 TTS（vits-melo-tts-zh_en int8），模型放在应用外部私有目录 models/tts。
+    implementation files('libs/sherpa-onnx-1.13.8.aar')
+}
+
+def repoRoot = rootProject.file('../../..')
+def agentBundle = file('src/main/assets/agent/agent.js')
+tasks.register('bundleAgent', Exec) {
+    inputs.files(fileTree(repoRoot) {
+        include 'apps/phone-companion/src/**/*.ts'
+        include 'packages/domain/**/*.ts'
+        include 'packages/contracts/**/*.json'
+        include 'packages/providers/registry/**/*.json'
+    })
+    outputs.file(agentBundle)
+    commandLine 'node', new File(repoRoot, 'tools/build-mobile-agent.mjs').absolutePath
+}
+tasks.matching { it.name == 'mergeDebugAssets' }.configureEach {
+    dependsOn tasks.named('bundleAgent')
+}

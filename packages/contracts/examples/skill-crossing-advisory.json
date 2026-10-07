@@ -1,0 +1,17 @@
+{
+  "skill_id": "crossing_advisory",
+  "version": "1.0",
+  "parameters_schema": {
+    "type": "object",
+    "required": ["intersection_id", "travel_heading"],
+    "properties": {
+      "intersection_id": { "type": "string", "minLength": 1 },
+      "travel_heading": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+    },
+    "additionalProperties": false
+  },
+  "allowed_tools": ["observation.request"],
+  "result_kinds": ["observation.result", "crossing.advisory"],
+  "risk_level": "high",
+  "required_policy": "crossing-advisory"
+}

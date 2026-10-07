@@ -1,0 +1,111 @@
+{
+  "schema_version": "1.0",
+  "skills": [
+    {
+      "skill_id": "navigate_to",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "required": ["target"],
+        "properties": { "target": { "type": "string", "minLength": 1 } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["navigation.search_destination", "navigation.confirm_destination", "speech.ask_user"],
+      "result_kinds": ["destination.candidates", "navigation.state"],
+      "risk_level": "low"
+    },
+    {
+      "skill_id": "inspect_scene",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "properties": { "focus": { "type": "string" } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["observation.request", "facts.query", "speech.ask_user"],
+      "result_kinds": ["observation.result"],
+      "risk_level": "low"
+    },
+    {
+      "skill_id": "read_text",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "properties": { "mode": { "enum": ["sign", "form", "menu", "general"] } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["observation.request", "facts.query", "speech.ask_user"],
+      "result_kinds": ["text.read"],
+      "risk_level": "low"
+    },
+    {
+      "skill_id": "find_target",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "required": ["target"],
+        "properties": { "target": { "type": "string", "minLength": 1 } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["observation.request", "facts.query", "speech.ask_user"],
+      "result_kinds": ["target.found"],
+      "risk_level": "low"
+    },
+    {
+      "skill_id": "follow_up",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "required": ["question"],
+        "properties": { "question": { "type": "string", "minLength": 1 } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["facts.query", "speech.ask_user", "session.cancel"],
+      "result_kinds": ["facts.query_result"],
+      "risk_level": "low"
+    },
+    {
+      "skill_id": "crossing_advisory",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "required": ["intersection_id", "travel_heading"],
+        "properties": {
+          "intersection_id": { "type": "string", "minLength": 1 },
+          "travel_heading": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 }
+        },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["observation.request", "facts.query", "speech.ask_user"],
+      "result_kinds": ["observation.result", "crossing.advisory"],
+      "risk_level": "high",
+      "required_policy": "crossing-advisory"
+    },
+    {
+      "skill_id": "obstacle_advisory",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "properties": { "travel_heading": { "type": "number", "minimum": 0, "exclusiveMaximum": 360 } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["observation.request", "facts.query", "speech.ask_user"],
+      "result_kinds": ["obstacle.advisory"],
+      "risk_level": "high",
+      "required_policy": "obstacle-advisory"
+    },
+    {
+      "skill_id": "menu_structuring",
+      "version": "1.0",
+      "parameters_schema": {
+        "type": "object",
+        "properties": { "preference": { "type": "string" } },
+        "additionalProperties": false
+      },
+      "allowed_tools": ["observation.request", "facts.query", "speech.ask_user"],
+      "result_kinds": ["menu.structured"],
+      "risk_level": "medium",
+      "required_policy": "menu-structuring"
+    }
+  ]
+}

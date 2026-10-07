@@ -18,6 +18,7 @@ node_modules/
 dist/
 coverage/
 .turbo/
+.worktrees/
 
 # Device and proprietary evidence
 *.apk
@@ -25,6 +26,15 @@ coverage/
 *.aix
 *.zip
 *.7z
+*.aar
+*.jar
+*.tar.bz2
+*.lc
+*.litertlm
+*.onnx
+artifacts/
+.claude-dual-*.txt
+final-integrated-result.md
 device-dump/
 research/raw/
 research/phone-apk-analysis/raw/
@@ -34,3 +44,5 @@ research/phone-apk-analysis/raw/
 Thumbs.db
 *.log
 *.tmp
+apps/phone-companion/android/src/main/assets/agent/agent.js
+.tmp-agent.js
