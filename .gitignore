@@ -46,3 +46,4 @@ Thumbs.db
 *.tmp
 apps/phone-companion/android/src/main/assets/agent/agent.js
 .tmp-agent.js
+PROJECT_NOTES.md
