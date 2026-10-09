@@ -23,7 +23,9 @@
 | JAVA_HOME | `C:\Program Files\Microsoft\jdk-17.0.19.10-hotspot\` | 当前采用 JDK 17 |
 | Java | OpenJDK 17.0.19 LTS | 与 Kotlin/Java 17 编译目标一致 |
 | Android SDK | `C:\Users\Administrator\AppData\Local\Android\Sdk` 存在 | SDK 目录已发现，具体组件版本尚未逐项记录 |
-| platform-tools | SDK 下的 `platform-tools` 目录存在 | `adb` 当前不在 PATH，需另行确认直接调用是否可用 |
+| platform-tools | SDK 下的 `platform-tools` 目录存在；`adb.exe` 版本 1.0.41 / 37.0.0-14910828 | `adb` 当前不在 PATH，但可通过绝对路径找到 |
+| ADB 服务 | 启动失败：无法连接本机 ADB Server；当前没有 adb 进程、5037 端口监听或设备枚举结果 | 这是当前工具链阻塞，不代表手机或眼镜不存在 |
+| SDK 组件 | `platforms/android-36.1`、`build-tools/35.0.0`、`36.1.0`、`37.0.0` 存在 | `cmdline-tools` 与旧 `tools` 目录未发现 |
 | Gradle | PATH 中未发现 `gradle`/`gradlew` | 仓库没有提交 Gradle Wrapper |
 | sdkmanager | PATH 中未发现 | 不能仅凭 PATH 结论判定 SDK 组件缺失 |
 
@@ -70,6 +72,7 @@
 - 眼镜准确型号、固件、系统/API 版本和官方 App 包名/版本仍需在设备与官方 App 内记录。
 - 手机准确型号、Android/厂商系统版本、USB 调试授权、蓝牙与定位权限状态仍需现场核对。
 - `adb version`、`adb devices -l` 以及脱敏后的 `getprop` 结果尚未作为本次提交的一部分上传。
+- 本机已通过绝对路径执行 `adb version`；`adb start-server` 和 `adb devices -l` 均因无法连接 ADB Server 失败，当前没有设备结果可记录。
 - Android SDK 组件、Gradle 8.13、Android Studio JDK 兼容组合需要在当前机器上逐项复核；不能把“目录存在”当成“工具链可构建”。
 - CXR-L 授权、Session、拍照、Mock AI 和眼镜显示的完整链路未因本文件而变为已验收。
 
