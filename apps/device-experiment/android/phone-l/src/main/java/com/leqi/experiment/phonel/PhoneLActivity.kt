@@ -56,7 +56,6 @@ class PhoneLActivity : Activity() {
         action("请求官方授权（不拍照）") { withBluetoothPermission { probe.authorize() } }
         action("创建并连接 CUSTOM_VIEW Session") { withBluetoothPermission { probe.connect() } }
         action("刷新 Session 与蓝牙状态") { withBluetoothPermission { probe.refresh() } }
-        action("测试眼镜文字更新（不拍照）") { probe.testDisplay() }
         action("关闭 Session / 取消授权") { probe.stop() }
         action("手动恢复（关闭旧连接，重新授权）") { withBluetoothPermission { probe.manualRecover() } }
         action("测试口径：冷启动") { probe.setStartKind("cold") }
@@ -76,14 +75,14 @@ class PhoneLActivity : Activity() {
             }, 3001)
         }
         action("拍照：打开本次确认窗口") {
-            val request = probe.armPhoto()
-            if (request != null) AlertDialog.Builder(this)
+            probe.preparePhoto { request -> AlertDialog.Builder(this)
                 .setTitle("确认本次眼镜拍照")
                 .setMessage("仅拍摄一张照片，在手机内存中预览；有效图片到达后自动发送明确标记的 Mock 文本到眼镜。请求：${request.id}")
                 .setPositiveButton("确认拍照") { _, _ -> probe.confirmPhoto(request.id) }
                 .setNegativeButton("取消") { _, _ -> probe.cancelPhoto() }
                 .setOnCancelListener { probe.cancelPhoto() }
                 .show()
+            }
         }
         action("取消本次图片接收") { probe.cancelPhoto() }
         action("人工确认眼镜看见本次 Mock 文本") {

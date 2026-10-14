@@ -16,6 +16,7 @@ internal class PhotoGate {
         private set
     private var sessionId: String? = null
     private var used = false
+    val consumed: Boolean get() = used
 
     fun newSession(id: String) {
         require(id.isNotBlank() && id != sessionId)
