@@ -120,6 +120,11 @@ class CxrlSessionProbeTest {
         assertTrue(fixture.lines.none { it.contains("人工确认看见") })
         fixture.probe.confirmVisible()
         assertTrue(fixture.lines.any { it.contains("人工确认看见") })
+        val run = fixture.probe.exportRecords().getJSONArray("runs").getJSONObject(0)
+        assertEquals(id, run.getString("request_id"))
+        assertEquals("human_confirmed", run.getString("outcome"))
+        assertTrue(run.getJSONObject("timestamps_ms").has("human_visible"))
+        assertEquals("image/jpeg", run.getJSONObject("image").getString("mime"))
         assertTrue(fixture.lines.none { it.contains("unit-test-token") })
         fixture.probe.destroy()
     }
@@ -129,6 +134,8 @@ class CxrlSessionProbeTest {
         fixture.deliver(byteArrayOf(1, 2, 3))
         assertTrue(fixture.updates.isEmpty())
         assertEquals(1, fixture.closes)
+        assertEquals("decode", fixture.probe.exportRecords().getJSONArray("runs")
+            .getJSONObject(0).getString("failure_stage"))
         fixture.probe.destroy()
     }
     @Test fun cancelledOldSessionImageCannotEnterFreshCapture() {

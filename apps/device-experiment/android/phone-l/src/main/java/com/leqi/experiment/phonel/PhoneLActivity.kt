@@ -6,11 +6,17 @@ import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Build
 import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.ImageView
+import android.widget.EditText
+import org.json.JSONObject
+import java.io.File
+import java.security.MessageDigest
+import java.util.concurrent.Executors
 import com.rokid.cxr.session.CxrSessionManager
 import com.rokid.cxr.session.RokidAppStatus
 
@@ -21,6 +27,9 @@ class PhoneLActivity : Activity() {
     private lateinit var probe: CxrlSessionProbe
     private lateinit var trace: TextView
     private val lines = ArrayDeque<String>()
+    private val exporter = Executors.newSingleThreadExecutor()
+    private var exportPending = false
+    private var glassesFirmware = "unrecorded"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,6 +58,22 @@ class PhoneLActivity : Activity() {
         action("刷新 Session 与蓝牙状态") { withBluetoothPermission { probe.refresh() } }
         action("关闭 Session / 取消授权") { probe.stop() }
         action("手动恢复：重新请求授权") { withBluetoothPermission { probe.manualRecover() } }
+        action("测试口径：冷启动") { probe.setStartKind("cold") }
+        action("测试口径：热运行") { probe.setStartKind("warm") }
+        action("记录眼镜固件版本") {
+            val value = EditText(this).apply { hint = "固件版本，不填序列号或账号"; setText(glassesFirmware) }
+            AlertDialog.Builder(this).setTitle("本次设备版本记录").setView(value)
+                .setPositiveButton("保存") { _, _ -> glassesFirmware = value.text.toString().trim().take(120) }
+                .setNegativeButton("取消", null).show()
+        }
+        action("导出脱敏验收记录 JSON") {
+            exportPending = true
+            startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = "application/json"
+                putExtra(Intent.EXTRA_TITLE, "cxrl-mvp-records.json")
+            }, 3001)
+        }
         action("拍照：打开本次确认窗口") {
             val request = probe.armPhoto()
             if (request != null) AlertDialog.Builder(this)
@@ -77,7 +102,7 @@ class PhoneLActivity : Activity() {
                 if (lines.size == 100) lines.removeFirst()
                 lines.addLast(line)
                 trace.text = lines.joinToString("\n")
-            }, { photo -> image.setImageBitmap(photo?.bitmap) })
+            }, { photo -> image.setImageBitmap(photo?.bitmap) }, versions = { recordVersions() })
             checkEnvironment()
         } catch (error: Exception) {
             // Exception messages may contain SDK credentials or device identifiers.
@@ -119,11 +144,56 @@ class PhoneLActivity : Activity() {
     @Deprecated("Official CXR-L authorization requires forwarding the Activity result.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode == 3001) {
+            val uri = data?.data
+            if (exportPending && resultCode == RESULT_OK && uri != null && ::probe.isInitialized) {
+                val snapshot = probe.exportRecords()
+                val firmware = glassesFirmware
+                exporter.execute {
+                    try {
+                        val digest = MessageDigest.getInstance("SHA-256")
+                        File(applicationInfo.sourceDir).inputStream().use { input ->
+                            val buffer = ByteArray(64 * 1024)
+                            while (true) { val read = input.read(buffer); if (read < 0) break; digest.update(buffer, 0, read) }
+                        }
+                        val metadata = recordVersions(firmware)
+                            .put("apk_sha256", digest.digest().joinToString("") { "%02x".format(it.toInt() and 255) })
+                        snapshot.put("metadata", metadata)
+                        contentResolver.openOutputStream(uri, "wt")?.use { output ->
+                            output.write(snapshot.toString(2).toByteArray(Charsets.UTF_8))
+                        } ?: error("No output stream")
+                        runOnUiThread { if (!isDestroyed) status.text = "脱敏记录已导出；仍需人工复核真机证据。" }
+                    } catch (error: Exception) {
+                        runOnUiThread { if (!isDestroyed) status.text = "记录导出失败：${error.javaClass.simpleName}" }
+                    }
+                }
+            }
+            exportPending = false
+            return
+        }
         if (::probe.isInitialized) probe.onActivityResult(resultCode, data)
+    }
+
+    private fun recordVersions(firmware: String = glassesFirmware): JSONObject {
+        val metadata = JSONObject().put("app_version", BuildConfig.VERSION_NAME)
+            .put("source_revision", BuildConfig.SOURCE_REVISION).put("sdk_version", "1.1.2")
+            .put("phone_model", Build.MODEL).put("phone_api", Build.VERSION.SDK_INT)
+            .put("glasses_firmware", firmware)
+        for (name in listOf("com.rokid.sprite.aiapp", "com.rokid.sprite.global.aiapp", "com.rokid.uxr")) {
+            try {
+                @Suppress("DEPRECATION")
+                val info = packageManager.getPackageInfo(name, 0)
+                metadata.put("official_app_package", name).put("official_app_version", info.versionName)
+                    .put("official_app_version_code", info.longVersionCode)
+                break
+            } catch (_: PackageManager.NameNotFoundException) { }
+        }
+        return metadata
     }
 
     override fun onDestroy() {
         if (::probe.isInitialized) probe.destroy()
+        exporter.shutdown()
         super.onDestroy()
     }
 

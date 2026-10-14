@@ -13,9 +13,9 @@
 使用 JDK 17/21，配置完整 Android SDK（platform 36.1、Build Tools 35.0.0）与 Gradle。在仓库根目录执行：
 
 ```powershell
-$env:JAVA_HOME = '<JDK 17 或 21 路径>'
+$env:JAVA_HOME = '<完整 JDK 17 或 21 路径，包含 jlink>'
 $env:ANDROID_HOME = '<Android SDK 路径>'
-& '<Gradle 路径>\bin\gradle.bat' -p apps/device-experiment/android -PcxrlProbeOnly=true :phone-l:assembleDebug
+& '<Gradle 路径>\bin\gradle.bat' -p apps/device-experiment/android -PcxrlProbeOnly=true -PleqiSourceRevision=$(git rev-parse HEAD) :phone-l:assembleDebug
 ```
 
 `cxrlProbeOnly=true` 仅配置 phone-l，避免完整 phone-bt 的模型/TTS 依赖影响独立探针。默认工程仍配置 phone-bt、glasses-bt，并新增 phone-l。Java 与 Kotlin 字节码目标均为 17。
@@ -90,3 +90,23 @@ Mock 复用仓库 ObservationResult 字段，保留 session_id/request_id/capabi
 connect、takePhoto、customViewUpdate 和资源释放在独立的串行 SDK 工作线程执行，图片解码另用工作线程，手机界面与超时计时不被 SDK 请求阻塞。SDK 显示请求有 20 秒超时；发送完成前不能人工确认成功。取消/退出先同步作废本地代号，再排队解除回调和 close。已经进入厂商 SDK 的调用无法由本程序保证立即中断；若 Binder 长期卡住，排队 close 的完成仍需真机观察，不能以本地已取消替代原生资源已释放。
 
 CUSTOM_VIEW 不提供眼镜实体键回调，本轮不把屏幕事件映射成实体键。用户同意的手机确认仅用于调试；眼镜实体键与官方助手共存仍须真机确认支持路线，必要时另接 CUSTOM_APP。已有 RFCOMM 运行层不改动。
+
+## 重复验收与延迟记录（#25 离线实现）
+
+每次确认拍照记录 request_id/session_id、测试者指定的 cold/warm、原始图片 MIME/尺寸/大小，以及手机 `elapsedRealtime` 阶段：确认、手机处理完整图片回调、解码校验、Mock 开始/结束、显示 API 开始/返回、人工确认可见。SDK 未公开曝光时间、首分片时间或显示回执；这些值保持未知，不能补造眼镜拍照/上传单向延迟。
+
+手机图片回调时间不是曝光时刻；SDK API 返回时间不是可见时刻；人工确认包含反应时间。只能计算同一手机单调时钟的阶段差值，不将两台设备的时钟直接相减。精确眼镜拍照/传输或首次可见时间需要外部录像等额外证据。cold/warm 指手机进程冷启动/已运行，不表示 SDK Session 被复用（本实现每次使用全新 Session）。
+
+在拍照前选冷/热类型并填写眼镜固件版本。每次确认时快照记录 App/SDK/手机/API/固件/官方 App 版本；导出补已安装 APK SHA-256 和编译时 source_revision。未设置或无法读取的版本保持 unknown/unrecorded，需要补齐后才能完成验收。记录最多保留 100 次，不保存原始图片、Token、账号、序列号、位置或错误正文。导出 Android 文档选择器会触发后台停止；建议在可见确认或失败已记录后导出。
+
+点击“导出脱敏验收记录 JSON”，选择自己的受控目录，然后在仓库根目录执行：
+
+```powershell
+node tools/summarize-cxrl-mvp.mjs <记录.json> > <报告.md>
+```
+
+汇总工具按每次记录的版本和 cold/warm 分组，不混合 APK 或启动口径；输出确认拍照样本数、人工确认率、仅发送/失败/未完成数、失败阶段及各手机阶段 P50/P95/最大值。分位数采用 nearest-rank；缺失阶段保持空，不填 0；重复请求、跨时钟类型、时间逆序和缺少对应可见记录会报错。多个 JSON 必须选择不重叠的样本。
+
+记录只保留在当前 Activity 的内存中，销毁或进程退出会丢失；冷启动测试每次完成后应先导出，各 JSON 的请求不能重叠。导出证据级别默认 unverified，用户人工确认也不自动升级为完整真机验收。Mock 耗时不能代表 Gemma 推理性能，Mock 文本不代表识别或安全辅助能力。重复真机样本、现场一致性和可见结果仍需人工检查。
+
+本轮 v0.2.0 最终本机构建采用完整 Oracle JDK 25.0.2 + Gradle 9.2.0（Java/Kotlin 目标 17），APK、原生测试与 lint 通过。此前 JBR 21 没有 jlink，启用 BuildConfig 生成 Java 后不能用于完整构建；CI 使用完整 Temurin JDK 21。未修改系统 JAVA_HOME。
