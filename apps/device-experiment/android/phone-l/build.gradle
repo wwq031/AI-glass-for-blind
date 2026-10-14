@@ -26,4 +26,8 @@ kotlin {
 }
 
 // Explicit migration to the API verified in the official CXR-L 1.1.2 Sample.
-dependencies { implementation 'com.rokid.cxr:client-l:1.1.2' }
+dependencies {
+    implementation 'com.rokid.cxr:client-l:1.1.2'
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.16'
+}

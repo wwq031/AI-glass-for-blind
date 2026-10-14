@@ -1,6 +1,7 @@
 package com.leqi.experiment.phonel
 
 import android.app.Activity
+import android.app.AlertDialog
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,6 +10,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.ImageView
 import com.rokid.cxr.session.CxrSessionManager
 import com.rokid.cxr.session.RokidAppStatus
 
@@ -46,16 +48,29 @@ class PhoneLActivity : Activity() {
         action("创建并连接 CUSTOM_VIEW Session") { withBluetoothPermission { probe.connect() } }
         action("刷新 Session 与蓝牙状态") { withBluetoothPermission { probe.refresh() } }
         action("关闭 Session / 取消授权") { probe.stop() }
+        action("拍照：打开本次确认窗口") {
+            val request = probe.armPhoto()
+            if (request != null) AlertDialog.Builder(this)
+                .setTitle("确认本次眼镜拍照")
+                .setMessage("仅拍摄一张照片，在手机内存中预览。请求：${request.id}")
+                .setPositiveButton("确认拍照") { _, _ -> probe.confirmPhoto(request.id) }
+                .setNegativeButton("取消") { _, _ -> probe.cancelPhoto() }
+                .setOnCancelListener { probe.cancelPhoto() }
+                .show()
+        }
+        action("取消本次图片接收") { probe.cancelPhoto() }
+        val image = ImageView(this).apply { adjustViewBounds = true }
+        content.addView(image, LinearLayout.LayoutParams(-1, 360))
         trace = TextView(this).apply { textSize = 14f }
         content.addView(trace)
         setContentView(ScrollView(this).apply { addView(content) })
         try {
             manager = CxrSessionManager.getInstance(applicationContext)
-            probe = CxrlSessionProbe(this, manager) { line ->
+            probe = CxrlSessionProbe(this, manager, { line ->
                 if (lines.size == 100) lines.removeFirst()
                 lines.addLast(line)
                 trace.text = lines.joinToString("\n")
-            }
+            }, { photo -> image.setImageBitmap(photo?.bitmap) })
             checkEnvironment()
         } catch (error: Exception) {
             // Exception messages may contain SDK credentials or device identifiers.
