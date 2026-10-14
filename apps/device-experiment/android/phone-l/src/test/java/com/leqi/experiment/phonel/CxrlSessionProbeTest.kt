@@ -53,6 +53,7 @@ class CxrlSessionProbeTest {
         var lastImages: IImageCallback? = null
         var lastEvents: IGlassesEventListener? = null
         var displayCode = SessionErrorCode.OK
+        var initialIdleEvents = false
         private val auth = AuthResult(true, "unit-test-token-never-logged", SessionErrorCode.OK, null)
         private fun sdkSession(): CxrSession = Proxy.newProxyInstance(CxrSession::class.java.classLoader,
             arrayOf(CxrSession::class.java)) { _, method, args ->
@@ -61,7 +62,14 @@ class CxrlSessionProbeTest {
                 "addImageCallback" -> { lastImages = args!![0] as IImageCallback; null }
                 "addGlassesEventListener" -> { lastEvents = args!![0] as IGlassesEventListener; null }
                 "removeLifecycleCallback", "removeImageCallback", "removeGlassesEventListener" -> null
-                "connect" -> { lastLifecycle!!.onConnectResult(true, null); lastLifecycle!!.onSessionStarted(); null }
+                "connect" -> {
+                    if (initialIdleEvents) {
+                        lastEvents!!.onLauncherResumed()
+                        lastEvents!!.onGlassesAppPaused()
+                        lastEvents!!.onScreenOff()
+                    }
+                    lastLifecycle!!.onConnectResult(true, null); lastLifecycle!!.onSessionStarted(); null
+                }
                 "close" -> { closes++; null }
                 "takePhoto" -> { captures++; SessionResult(SessionErrorCode.OK, Unit, null) }
                 "customViewUpdate" -> { updates.add(args!![0] as String); SessionResult(displayCode, Unit, null) }
@@ -120,6 +128,11 @@ class CxrlSessionProbeTest {
         assertTrue(fixture.lines.none { it.contains("人工确认看见") })
         fixture.probe.confirmVisible()
         assertTrue(fixture.lines.any { it.contains("人工确认看见") })
+        val run = fixture.probe.exportRecords().getJSONArray("runs").getJSONObject(0)
+        assertEquals(id, run.getString("request_id"))
+        assertEquals("human_confirmed", run.getString("outcome"))
+        assertTrue(run.getJSONObject("timestamps_ms").has("human_visible"))
+        assertEquals("image/jpeg", run.getJSONObject("image").getString("mime"))
         assertTrue(fixture.lines.none { it.contains("unit-test-token") })
         fixture.probe.destroy()
     }
@@ -129,6 +142,8 @@ class CxrlSessionProbeTest {
         fixture.deliver(byteArrayOf(1, 2, 3))
         assertTrue(fixture.updates.isEmpty())
         assertEquals(1, fixture.closes)
+        assertEquals("decode", fixture.probe.exportRecords().getJSONArray("runs")
+            .getJSONObject(0).getString("failure_stage"))
         fixture.probe.destroy()
     }
     @Test fun cancelledOldSessionImageCannotEnterFreshCapture() {
@@ -205,5 +220,13 @@ class CxrlSessionProbeTest {
         assertEquals(1, fixture.closes)
         assertTrue(fixture.lines.any { it.contains("显示请求超时") })
         fixture.probe.destroy(); executor.drain()
+    }
+    @Test fun initialIdleLauncherAndScreenEventsDoNotAbortSessionStartup() {
+        val fixture = Fixture()
+        fixture.initialIdleEvents = true
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        assertEquals(0, fixture.closes)
+        assertEquals(1, fixture.updates.size)
+        fixture.probe.destroy()
     }
 }

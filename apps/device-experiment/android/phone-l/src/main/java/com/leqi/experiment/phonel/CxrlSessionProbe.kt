@@ -25,6 +25,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 import java.util.concurrent.ExecutorService
+import org.json.JSONObject
 
 /** Standalone communication diagnostic; capture requires explicit per-request consent. */
 internal class CxrlSessionProbe(
@@ -34,6 +35,7 @@ internal class CxrlSessionProbe(
     private val preview: (DecodedPhoto?) -> Unit,
     private val decoder: ExecutorService = Executors.newSingleThreadExecutor(),
     private val sdkExecutor: ExecutorService = Executors.newSingleThreadExecutor(),
+    private val versions: () -> JSONObject = { JSONObject() },
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val origin = SystemClock.elapsedRealtime()
@@ -55,6 +57,8 @@ internal class CxrlSessionProbe(
     private var visibleConfirmed = false
     private var displayAccepted = false
     private var glassesListener: IGlassesEventListener? = null
+    private val runLog = MvpRunLog()
+    private var startKind = "unspecified"
 
     fun authorize() {
         if (destroyed || authPending || session != null) return
@@ -192,19 +196,24 @@ internal class CxrlSessionProbe(
                 private fun dispatch(action: () -> Unit) {
                     handler.post { if (!destroyed && attempt == generation && session === created) action() }
                 }
+                private fun stopActive(reason: String) {
+                    // SDK events also fire in Idle; the old launcher is expected before scene start.
+                    if (photoSessionInitialized) stop(reason)
+                    else record("$reason；Session 尚未 Started，仅记录初始状态")
+                }
                 override fun onGlassesAppResumed() = dispatch { record("眼镜应用恢复；未重开采集授权") }
-                override fun onGlassesAppPaused() = dispatch { stop("眼镜应用暂停，关闭本次 Session") }
+                override fun onGlassesAppPaused() = dispatch { stopActive("眼镜应用暂停") }
                 override fun onWearingStatusChanged(wearing: Boolean) = dispatch {
                     record("眼镜佩戴状态：$wearing")
                     if (!wearing) cancelPhoto("摘下眼镜，撤销本次拍照确认")
                 }
                 override fun onDeviceInfoChanged(info: GlassesInfo) = dispatch { record("设备信息更新；不记录设备标识") }
-                override fun onScreenOff() = dispatch { stop("眼镜灭屏，关闭本次 Session") }
+                override fun onScreenOff() = dispatch { stopActive("眼镜灭屏") }
                 override fun onScreenOn() = dispatch { record("眼镜亮屏；未自动授权或采集") }
-                override fun onLauncherResumed() = dispatch { stop("眼镜返回桌面，关闭本次 Session") }
+                override fun onLauncherResumed() = dispatch { stopActive("眼镜返回桌面") }
                 override fun onAiWake() = dispatch { cancelPhoto("官方助手唤醒，撤销本次拍照确认") }
-                override fun onAiInterruptChanged(interrupted: Boolean) = dispatch {
-                    if (interrupted) cancelPhoto("官方助手中断，撤销本次拍照确认")
+                override fun onAiInterruptChanged(interruptWake: Boolean) = dispatch {
+                    if (interruptWake) cancelPhoto("官方助手中断，撤销本次拍照确认")
                 }
             }
             glassesListener = events
@@ -244,6 +253,7 @@ internal class CxrlSessionProbe(
             return
         }
         clearPhotoDeadline()
+        runLog.start(request, startKind, versions())
         photoDeadline = Runnable { stop("request=${request.id} 图片接收/解码超时") }
         handler.postDelayed(photoDeadline!!, PhotoGate.TIMEOUT_MS)
         record("request=${request.id} 用户确认；调用 takePhoto(640,480,80)")
@@ -275,19 +285,26 @@ internal class CxrlSessionProbe(
     private fun receiveImage(data: ByteArray?, attempt: Long) {
         val request = photos.current ?: return
         if (!photos.receive(request.id, SystemClock.elapsedRealtime())) return
+        runLog.mark(request.id, "image_callback", request.receivedAt!!)
         if (data == null || data.isEmpty()) { stop("request=${request.id} 图片为空或超过大小限制"); return }
         record("request=${request.id} 完整图片回调 bytes=${data.size}；开始解码校验")
         decodeJob = decoder.submit {
             val photo = try { PhotoDecoder.decode(data) } catch (_: Exception) { null }
             handler.post {
-                if (destroyed || attempt != generation ||
-                    !photos.validated(request.id, SystemClock.elapsedRealtime())) {
+                if (destroyed || attempt != generation || photos.current !== request) {
                     photo?.bitmap?.recycle()
                     return@post
                 }
                 if (photo == null) { stop("request=${request.id} 图片格式/尺寸/解码校验失败"); return@post }
+                if (!photos.validated(request.id, SystemClock.elapsedRealtime())) {
+                    photo.bitmap.recycle()
+                    stop("request=${request.id} 图片解码结果过期")
+                    return@post
+                }
                 clearPhotoDeadline()
                 decodedPhoto = photo
+                runLog.mark(request.id, "image_validated", request.validatedAt!!)
+                runLog.photo(request.id, photo.metadata)
                 preview(photo)
                 val meta = photo.metadata
                 record("request=${request.id} 图片已验证 ${meta.mime} ${meta.width}x${meta.height} bytes=${meta.bytes}")
@@ -301,7 +318,9 @@ internal class CxrlSessionProbe(
         if (destroyed || !started || photos.current !== request || displayRequest != null) return
         try {
             record("request=${request.id} Mock 开始；无模型/TTS/地图/云端依赖")
+            runLog.mark(request.id, "mock_start", SystemClock.elapsedRealtime())
             val result = MockObservation.create(request, photo.metadata)
+            runLog.mark(request.id, "mock_end", SystemClock.elapsedRealtime())
             record("request=${request.id} Mock 完成：${result.getString("summary")}")
             displayRequest = request.id
             val attempt = generation
@@ -311,12 +330,17 @@ internal class CxrlSessionProbe(
             sdkExecutor.execute {
                 if (!destroyed && attempt == generation) {
                     try {
+                        val callStart = SystemClock.elapsedRealtime()
+                        handler.post { if (!destroyed && attempt == generation)
+                            runLog.mark(request.id, "display_call_start", callStart) }
                         val update = currentSession.customViewUpdate(json)
+                        val callEnd = SystemClock.elapsedRealtime()
                         handler.post {
                             if (destroyed || attempt != generation || photos.current !== request) return@post
                             if (!update.isSuccess) { stop("request=${request.id} 显示请求失败：${update.code.name}"); return@post }
                             clearPhotoDeadline()
                             displayAccepted = true
+                            runLog.mark(request.id, "display_call_end", callEnd)
                             record("request=${request.id} SDK 显示更新被接受；眼镜实际可见仍待人工核对")
                         }
                     } catch (error: Exception) {
@@ -337,6 +361,7 @@ internal class CxrlSessionProbe(
             return
         }
         visibleConfirmed = true
+        runLog.mark(request.id, "human_visible", SystemClock.elapsedRealtime())
         record("request=${request.id} 佩戴者人工确认看见本次 Mock 文本；非 SDK 显示回执")
     }
 
@@ -389,6 +414,15 @@ internal class CxrlSessionProbe(
         authPending = false
         token = null
         started = false
+        val failureStage = when {
+            displayAccepted -> "visibility"
+            displayRequest != null -> "display"
+            photos.current?.phase == PhotoGate.Phase.DECODING -> "decode"
+            photos.current?.phase == PhotoGate.Phase.RECEIVING -> "capture"
+            photos.current?.phase == PhotoGate.Phase.VALIDATED -> "mock"
+            else -> "lifecycle"
+        }
+        runLog.finish(failureStage)
         photos.close()
         clearPhoto()
         val oldSession = session
@@ -415,6 +449,17 @@ internal class CxrlSessionProbe(
         }
         record(reason)
     }
+
+    fun setStartKind(kind: String) {
+        if (kind !in setOf("cold", "warm") || photos.current != null) {
+            record("请在本次拍照前选择冷/热启动口径")
+            return
+        }
+        startKind = kind
+        record("下一次测试启动类型：$kind（由测试者指定）")
+    }
+
+    fun exportRecords(): JSONObject = runLog.export()
 
     fun destroy() {
         destroyed = true

@@ -34,4 +34,4 @@ jobs:
       - name: Install SDK components
         run: sdkmanager 'platforms;android-36.1' 'build-tools;35.0.0'
       - name: Build, replay SDK callbacks and lint
-        run: gradle -p apps/device-experiment/android -PcxrlProbeOnly=true :phone-l:assembleDebug :phone-l:testDebugUnitTest :phone-l:lintDebug --console=plain
+        run: gradle -p apps/device-experiment/android -PcxrlProbeOnly=true -PleqiSourceRevision="$GITHUB_SHA" :phone-l:assembleDebug :phone-l:testDebugUnitTest :phone-l:lintDebug --console=plain
