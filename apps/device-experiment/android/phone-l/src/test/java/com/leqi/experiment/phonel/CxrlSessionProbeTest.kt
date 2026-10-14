@@ -49,12 +49,19 @@ class CxrlSessionProbeTest {
         val updates = mutableListOf<String>()
         var captures = 0
         var closes = 0
+        var creates = 0
+        var closedIdle = true
+        var closeThrows = false
         var lastLifecycle: ISessionLifecycleCbk? = null
         var lastImages: IImageCallback? = null
         var lastEvents: IGlassesEventListener? = null
         var displayCode = SessionErrorCode.OK
         var initialIdleEvents = false
-        private val auth = AuthResult(true, "unit-test-token-never-logged", SessionErrorCode.OK, null)
+        var directAuthorization = true
+        var authRequests = 0
+        var parseCalls = 0
+        val authCallbacks = mutableListOf<(AuthResult) -> Unit>()
+        val auth = AuthResult(true, "unit-test-token-never-logged", SessionErrorCode.OK, null)
         private fun sdkSession(): CxrSession = Proxy.newProxyInstance(CxrSession::class.java.classLoader,
             arrayOf(CxrSession::class.java)) { _, method, args ->
             when (method.name) {
@@ -70,31 +77,35 @@ class CxrlSessionProbeTest {
                     }
                     lastLifecycle!!.onConnectResult(true, null); lastLifecycle!!.onSessionStarted(); null
                 }
-                "close" -> { closes++; null }
+                "close" -> { closes++; if (closeThrows) error("close failed"); null }
+                "getState" -> if (closedIdle) SessionState.Idle else SessionState.Terminating
                 "takePhoto" -> { captures++; SessionResult(SessionErrorCode.OK, Unit, null) }
                 "customViewUpdate" -> { updates.add(args!![0] as String); SessionResult(displayCode, Unit, null) }
                 else -> error("Unexpected SDK call: ${method.name}")
             }
         } as CxrSession
-        private val manager = Proxy.newProxyInstance(CxrSessionManager::class.java.classLoader,
+        private val manager: CxrSessionManager = Proxy.newProxyInstance(CxrSessionManager::class.java.classLoader,
             arrayOf(CxrSessionManager::class.java)) { _, method, args ->
             when (method.name) {
                 "isRokidAppInstalled", "isGlassesBtConnected" -> true
                 "checkRokidAppCompatibility" -> RokidAppStatus.Compatible("1.11.0")
-                "parseAuthorizationResult" -> auth
+                "parseAuthorizationResult" -> { parseCalls++; authCallbacks.last().invoke(auth); auth }
                 "requestAuthorization" -> {
+                    authRequests++
                     @Suppress("UNCHECKED_CAST")
-                    (args!![2] as (AuthResult) -> Unit)(auth)
+                    val callback = args!![2] as (AuthResult) -> Unit
+                    authCallbacks.add(callback)
+                    if (directAuthorization) callback(auth)
+                    else probe.onAuthorizationActivityLaunched(1000 + authRequests)
                     null
                 }
-                "create" -> sdkSession()
+                "create" -> { creates++; sdkSession() }
                 else -> error("Unexpected manager call: ${method.name}")
             }
         } as CxrSessionManager
-        val probe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor)
+        val probe: CxrlSessionProbe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor)
         fun connect() {
             probe.authorize()
-            probe.onActivityResult(Activity.RESULT_OK, null)
             idle()
             probe.connect()
             idle()
@@ -200,7 +211,7 @@ class CxrlSessionProbeTest {
         old.onSessionResumed(); idle()
         assertNull(fixture.probe.armPhoto())
         fixture.probe.manualRecover()
-        fixture.probe.onActivityResult(Activity.RESULT_OK, null); idle()
+        idle()
         fixture.probe.connect(); idle()
         fixture.capture(); fixture.deliver(jpeg())
         assertEquals(1, fixture.updates.size)
@@ -227,6 +238,179 @@ class CxrlSessionProbeTest {
         fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
         assertEquals(0, fixture.closes)
         assertEquals(1, fixture.updates.size)
+        fixture.probe.destroy()
+    }
+    @Test fun cachedGrantWithoutAnyActivityResultCanRecoverAndCaptureAgain() {
+        val fixture = Fixture()
+        fixture.connect()
+        fixture.probe.manualRecover(); idle()
+        fixture.probe.connect(); idle()
+        fixture.capture(); fixture.deliver(jpeg())
+        assertEquals(2, fixture.authRequests)
+        assertEquals(0, fixture.parseCalls)
+        assertEquals(1, fixture.updates.size)
+        assertTrue(fixture.lines.none { it.contains("等待上一次") })
+        fixture.probe.destroy()
+    }
+    @Test fun callbackCancelledBeforeDeliveryCannotBlockRetryOrReviveOldAuthorization() {
+        val fixture = Fixture()
+        fixture.probe.authorize() // Its cached result is queued on the main looper.
+        fixture.probe.stop()
+        fixture.probe.authorize()
+        idle()
+        fixture.probe.connect(); idle()
+        assertEquals(2, fixture.authRequests)
+        assertNotNull(fixture.probe.armPhoto())
+        assertEquals(1, fixture.lines.count { it.contains("用户授权成功") })
+        fixture.probe.destroy()
+    }
+    @Test fun interactiveAuthorizationUsesActualRequestCodeAndIgnoresUnrelatedResults() {
+        val fixture = Fixture()
+        fixture.directAuthorization = false
+        fixture.probe.authorize()
+        fixture.probe.onActivityResult(1234, Activity.RESULT_OK, null); idle()
+        assertEquals(0, fixture.parseCalls)
+        fixture.probe.onActivityResult(1001, Activity.RESULT_OK, null); idle()
+        fixture.probe.connect(); idle()
+        assertNotNull(fixture.probe.armPhoto())
+        assertEquals(1, fixture.parseCalls)
+        assertEquals(1, fixture.lines.count { it.contains("用户授权成功") })
+        fixture.probe.destroy()
+    }
+    @Test fun timedOutInteractiveGrantCannotBeMappedToANewerAuthorization() {
+        val fixture = Fixture()
+        fixture.directAuthorization = false
+        fixture.probe.authorize()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(61))
+        fixture.probe.manualRecover()
+        assertEquals(1, fixture.authRequests) // Old external UI must return first.
+        fixture.probe.onActivityResult(1001, Activity.RESULT_OK, null); idle()
+        assertEquals(0, fixture.parseCalls)
+        fixture.probe.manualRecover()
+        fixture.authCallbacks.first().invoke(fixture.auth)
+        fixture.probe.onActivityResult(1001, Activity.RESULT_OK, null); idle()
+        assertEquals(0, fixture.parseCalls)
+        fixture.probe.onActivityResult(1002, Activity.RESULT_OK, null); idle()
+        fixture.probe.connect(); idle()
+        assertEquals(2, fixture.authRequests)
+        assertNotNull(fixture.probe.armPhoto())
+        fixture.probe.destroy()
+    }
+    @Test fun nextPhotoRecyclesSessionAndRequiresFreshConsent() {
+        val fixture = Fixture()
+        fixture.connect(); val first = fixture.capture(); fixture.deliver(jpeg())
+        val oldImages = fixture.lastImages!!
+        var next: PhotoGate.Request? = null
+        fixture.probe.preparePhoto { next = it }; idle()
+        assertEquals(1, fixture.closes)
+        assertEquals(2, fixture.creates)
+        assertEquals(2, fixture.authRequests)
+        assertNotNull(next)
+        assertNotEquals(first, next!!.id)
+        assertEquals(1, fixture.captures) // Reconnection never implies camera consent.
+        oldImages.onImageReceived(jpeg()); idle()
+        assertEquals(1, fixture.updates.size)
+        fixture.probe.confirmPhoto(first)
+        assertEquals(1, fixture.captures)
+        fixture.probe.confirmPhoto(next!!.id); fixture.deliver(jpeg())
+        assertEquals(2, fixture.captures)
+        assertEquals(2, fixture.updates.size)
+        assertTrue(fixture.updates.last().contains(next!!.id.take(8)))
+        fixture.probe.destroy()
+    }
+    @Test fun asynchronousCloseMustReachIdleBeforeAuthorizationAndCreate() {
+        val fixture = Fixture()
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        fixture.closedIdle = false
+        var next: PhotoGate.Request? = null
+        fixture.probe.preparePhoto { next = it }; idle()
+        fixture.probe.preparePhoto { error("Duplicate click must not replace pending consent") }
+        assertEquals(1, fixture.closes)
+        assertEquals(1, fixture.creates)
+        assertEquals(1, fixture.authRequests)
+        assertNull(next)
+        fixture.closedIdle = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(101))
+        assertEquals(2, fixture.creates)
+        assertNotNull(next)
+        assertEquals(1, fixture.captures)
+        fixture.probe.destroy()
+    }
+    @Test fun cancelledOrBackgroundedRecycleCannotRearmAfterIdle() {
+        for (background in listOf(false, true)) {
+            val fixture = Fixture()
+            fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+            fixture.closedIdle = false
+            fixture.probe.preparePhoto { error("Cancelled preparation cannot show confirmation") }; idle()
+            if (background) fixture.probe.hostBackground() else fixture.probe.cancelPhoto()
+            fixture.closedIdle = true
+            shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(101))
+            assertEquals(1, fixture.creates)
+            assertEquals(1, fixture.authRequests)
+            assertEquals(1, fixture.captures)
+            fixture.probe.destroy()
+        }
+    }
+    @Test fun closeFailureOrTimeoutDoesNotCreateAnotherSession() {
+        val fixture = Fixture()
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        fixture.closedIdle = false; fixture.closeThrows = true
+        fixture.probe.preparePhoto { error("Failed cleanup cannot show confirmation") }; idle()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(11))
+        assertEquals(1, fixture.creates)
+        assertEquals(1, fixture.authRequests)
+        assertTrue(fixture.lines.any { it.contains("回收超时") })
+        fixture.closedIdle = true
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(1))
+        assertEquals(1, fixture.creates)
+        fixture.probe.manualRecover(); idle(); fixture.probe.connect(); idle()
+        assertEquals(2, fixture.creates)
+        assertEquals(1, fixture.captures)
+        fixture.probe.destroy()
+    }
+    @Test fun nextPhotoCannotInterruptCaptureOrPendingDisplay() {
+        val fixture = Fixture()
+        fixture.connect(); fixture.capture()
+        fixture.probe.preparePhoto { error("Active capture cannot be recycled") }; idle()
+        assertEquals(0, fixture.closes)
+        assertEquals(1, fixture.creates)
+        fixture.probe.destroy()
+    }
+    @Test fun queuedCleanupCompletesBeforeNewSessionAndCameraRemainsUncalled() {
+        val executor = QueuedExecutor()
+        val fixture = Fixture(executor)
+        fixture.connect(); executor.drain(); idle(); executor.drain(); idle()
+        fixture.capture(); executor.drain(); idle(); fixture.deliver(jpeg())
+        executor.drain(); idle()
+        var next: PhotoGate.Request? = null
+        fixture.probe.preparePhoto { next = it }; idle()
+        assertEquals(0, fixture.closes)
+        assertEquals(1, fixture.creates)
+        executor.drain(); idle(); executor.drain(); idle(); executor.drain(); idle()
+        assertEquals(1, fixture.closes)
+        assertEquals(2, fixture.creates)
+        assertNotNull(next)
+        assertEquals(1, fixture.captures)
+        fixture.probe.destroy(); executor.drain()
+    }
+    @Test fun recycleCanCompleteInteractiveAuthorizationWithoutLosingFreshConsent() {
+        val fixture = Fixture()
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        fixture.directAuthorization = false
+        var next: PhotoGate.Request? = null
+        fixture.probe.preparePhoto { next = it }; idle()
+        fixture.probe.hostBackground() // Official authorization Activity is in front.
+        assertEquals(1, fixture.creates)
+        assertNull(next)
+        fixture.probe.onActivityResult(1002, Activity.RESULT_OK, null); idle()
+        assertEquals(2, fixture.creates)
+        assertNotNull(next)
+        assertEquals(1, fixture.captures)
+        fixture.probe.cancelPhoto()
+        var replacement: PhotoGate.Request? = null
+        fixture.probe.preparePhoto { replacement = it }
+        assertNotNull(replacement)
+        assertEquals(2, fixture.creates) // Cancelled unconfirmed request can use this fresh scene.
         fixture.probe.destroy()
     }
 }

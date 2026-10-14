@@ -20,6 +20,7 @@ import com.rokid.cxr.session.RokidAppStatus
 import com.rokid.cxr.session.SessionConfig
 import com.rokid.cxr.session.SessionErrorCode
 import com.rokid.cxr.session.SessionType
+import com.rokid.cxr.session.SessionState
 import com.rokid.cxr.session.TerminatingReason
 import java.util.UUID
 import java.util.concurrent.Executors
@@ -42,6 +43,7 @@ internal class CxrlSessionProbe(
     @Volatile private var generation = 0L
     private var authPending = false
     private var authorizationAttempt: Long? = null
+    private var authorizationRequestCode: Int? = null
     private var token: String? = null
     private var session: CxrSession? = null
     private var lifecycle: ISessionLifecycleCbk? = null
@@ -59,6 +61,10 @@ internal class CxrlSessionProbe(
     private var glassesListener: IGlassesEventListener? = null
     private val runLog = MvpRunLog()
     private var startKind = "unspecified"
+    private var pendingPhoto: ((PhotoGate.Request) -> Unit)? = null
+    private var pendingConnect = false
+    private var closingSession: CxrSession? = null
+    private var closeDeadline: Runnable? = null
 
     fun authorize() {
         if (destroyed || authPending || session != null) return
@@ -69,12 +75,14 @@ internal class CxrlSessionProbe(
         try {
             if (!manager.isRokidAppInstalled(activity) ||
                 manager.checkRokidAppCompatibility(activity) !is RokidAppStatus.Compatible) {
-                record("授权拒绝：请先安装兼容官方 App")
+                if (pendingPhoto != null) stop("授权拒绝：请先安装兼容官方 App")
+                else record("授权拒绝：请先安装兼容官方 App")
                 return
             }
             token = null
             val attempt = ++generation
             authorizationAttempt = attempt
+            authorizationRequestCode = null
             authPending = true
             record("请求用户授权：CAMERA + MEDIA；Token 仅保存在内存")
             armDeadline("用户授权超时", attempt, 60_000L)
@@ -83,13 +91,22 @@ internal class CxrlSessionProbe(
             }
         } catch (error: Exception) {
             authorizationAttempt = null
+            authorizationRequestCode = null
             stop("授权异常：${error.javaClass.simpleName}")
         }
     }
 
-    fun onActivityResult(resultCode: Int, data: Intent?) {
+    fun onAuthorizationActivityLaunched(requestCode: Int) {
+        if (!destroyed && authPending && authorizationAttempt == generation) {
+            authorizationRequestCode = requestCode
+        }
+    }
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != authorizationRequestCode) return
         val attempt = authorizationAttempt ?: return
         authorizationAttempt = null
+        authorizationRequestCode = null
         if (!authPending || destroyed || attempt != generation) return
         try {
             acceptAuthorization(attempt, manager.parseAuthorizationResult(resultCode, data))
@@ -101,14 +118,25 @@ internal class CxrlSessionProbe(
     private fun acceptAuthorization(attempt: Long, result: AuthResult) {
         if (destroyed || attempt != generation || !authPending) return
         authPending = false
+        // SDK 1.1.2 can return a cached grant directly, without launching an Activity.
+        authorizationAttempt = null
+        authorizationRequestCode = null
         clearDeadline()
         token = result.token?.takeIf { result.isSuccess && it.isNotBlank() }
         record(if (token != null) "用户授权成功；等待手动创建 Session"
             else "用户授权失败/取消：${result.errorCode?.name ?: "无有效 Token"}")
+        if (pendingPhoto != null) {
+            if (token != null) connect() else stop("本次拍照准备取消：授权未成功")
+        }
     }
 
     fun connect() {
         if (destroyed || authPending || session != null) return
+        if (closingSession != null) {
+            pendingConnect = true
+            record("等待旧 SDK Session 回收至 Idle，尚未创建新 Session")
+            return
+        }
         val localToken = token ?: run { record("请先获得用户授权"); return }
         val attempt = ++generation
         try {
@@ -142,6 +170,10 @@ internal class CxrlSessionProbe(
                     record("SDK Session Started；请在眼镜核对 CXR-L probe 文本")
                     record("眼镜可见反馈：尚未由佩戴者验收")
                     reportBluetooth()
+                    pendingPhoto?.let { ready ->
+                        pendingPhoto = null
+                        armPhoto()?.let(ready)
+                    }
                 }
                 override fun onSessionPaused(reason: PausedReason) = dispatch {
                     started = false
@@ -246,6 +278,24 @@ internal class CxrlSessionProbe(
         return request
     }
 
+    fun preparePhoto(ready: (PhotoGate.Request) -> Unit) {
+        if (destroyed || pendingPhoto != null) return
+        if (photos.current != null && !displayAccepted) {
+            record("请先完成或取消当前拍照请求")
+            return
+        }
+        if (started && !photos.consumed) {
+            armPhoto()?.let(ready)
+            return
+        }
+        if (!started || !displayAccepted) {
+            record("拍照未就绪：请先授权并连接 Session")
+            return
+        }
+        stop("准备下一次拍照：回收旧 Session，撤销旧拍照确认")
+        pendingPhoto = ready
+    }
+
     fun confirmPhoto(id: String) {
         val currentSession = session ?: return
         val request = photos.confirm(id, SystemClock.elapsedRealtime()) ?: run {
@@ -276,6 +326,7 @@ internal class CxrlSessionProbe(
     }
 
     fun cancelPhoto(reason: String = "用户取消拍照") {
+        if (pendingPhoto != null) { stop(reason); return }
         if (photos.current?.confirmedAt != null) { stop(reason); return }
         clearPhotoDeadline()
         photos.cancel()
@@ -384,11 +435,20 @@ internal class CxrlSessionProbe(
 
     fun hostBackground() {
         // Opening the authorization Activity must remain possible before Session creation.
-        if (session != null) stop("手机宿主后台/灭屏：关闭 Session，返回后需手动重新授权连接")
+        if (session != null || (pendingPhoto != null && authorizationRequestCode == null))
+            stop("手机宿主后台/灭屏：关闭 Session，返回后需手动重新授权连接")
     }
 
     fun manualRecover() {
         stop("用户手动恢复：清理旧 Session，不恢复旧拍照授权")
+        closingSession?.let { old -> if (closeDeadline == null) {
+            sdkExecutor.execute {
+                try { old.close() } catch (error: Exception) {
+                    handler.post { if (!destroyed) record("SDK 再次清理异常：${error.javaClass.simpleName}") }
+                }
+            }
+            startCloseWait(old)
+        } }
         authorize()
     }
 
@@ -411,7 +471,10 @@ internal class CxrlSessionProbe(
     fun stop(reason: String = "用户关闭 Session，撤销本地授权") {
         ++generation // Old SDK callbacks and authorization results cannot revive this attempt.
         clearDeadline()
+        pendingPhoto = null
+        pendingConnect = false
         authPending = false
+        if (authorizationRequestCode == null) authorizationAttempt = null
         token = null
         started = false
         val failureStage = when {
@@ -434,6 +497,8 @@ internal class CxrlSessionProbe(
         imageCallback = null
         glassesListener = null
         if (oldSession != null) {
+            closingSession = oldSession
+            startCloseWait(oldSession)
             sdkExecutor.execute {
                 for (remove in listOf<() -> Unit>(
                     { if (oldCallback != null) oldSession.removeLifecycleCallback(oldCallback) },
@@ -448,6 +513,37 @@ internal class CxrlSessionProbe(
             }
         }
         record(reason)
+    }
+
+    private fun startCloseWait(oldSession: CxrSession) {
+        closeDeadline?.let { handler.removeCallbacks(it) }
+        closeDeadline = Runnable {
+            if (!destroyed && closingSession === oldSession) {
+                closeDeadline = null
+                stop("旧 SDK Session 回收超时；未创建新 Session，请手动恢复后重试")
+            }
+        }
+        handler.postDelayed(closeDeadline!!, 10_000L)
+        // Check on the SDK queue after callback removal and close have been submitted.
+        handler.post { awaitClosed(oldSession) }
+    }
+
+    private fun awaitClosed(oldSession: CxrSession) {
+        if (destroyed || closingSession !== oldSession || closeDeadline == null) return
+        sdkExecutor.execute {
+            val idle = try { oldSession.getState() == SessionState.Idle } catch (_: Exception) { false }
+            handler.post {
+                if (destroyed || closingSession !== oldSession || closeDeadline == null) return@post
+                if (idle) {
+                    closingSession = null
+                    closeDeadline?.let { handler.removeCallbacks(it) }
+                    closeDeadline = null
+                    record("旧 SDK Session 已回收至 Idle")
+                    if (pendingPhoto != null && token == null) authorize()
+                    else if (pendingConnect) { pendingConnect = false; connect() }
+                } else handler.postDelayed({ awaitClosed(oldSession) }, 100L)
+            }
+        }
     }
 
     fun setStartKind(kind: String) {
