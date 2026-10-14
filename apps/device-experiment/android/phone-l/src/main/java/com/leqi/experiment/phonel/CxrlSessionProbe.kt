@@ -42,6 +42,7 @@ internal class CxrlSessionProbe(
     @Volatile private var generation = 0L
     private var authPending = false
     private var authorizationAttempt: Long? = null
+    private var authorizationRequestCode: Int? = null
     private var token: String? = null
     private var session: CxrSession? = null
     private var lifecycle: ISessionLifecycleCbk? = null
@@ -59,6 +60,9 @@ internal class CxrlSessionProbe(
     private var glassesListener: IGlassesEventListener? = null
     private val runLog = MvpRunLog()
     private var startKind = "unspecified"
+    private var displayTestPending = false
+    private var displayTestSequence = 0
+    private var displayTestDeadline: Runnable? = null
 
     fun authorize() {
         if (destroyed || authPending || session != null) return
@@ -75,6 +79,7 @@ internal class CxrlSessionProbe(
             token = null
             val attempt = ++generation
             authorizationAttempt = attempt
+            authorizationRequestCode = null
             authPending = true
             record("请求用户授权：CAMERA + MEDIA；Token 仅保存在内存")
             armDeadline("用户授权超时", attempt, 60_000L)
@@ -83,13 +88,22 @@ internal class CxrlSessionProbe(
             }
         } catch (error: Exception) {
             authorizationAttempt = null
+            authorizationRequestCode = null
             stop("授权异常：${error.javaClass.simpleName}")
         }
     }
 
-    fun onActivityResult(resultCode: Int, data: Intent?) {
+    fun onAuthorizationActivityLaunched(requestCode: Int) {
+        if (!destroyed && authPending && authorizationAttempt == generation) {
+            authorizationRequestCode = requestCode
+        }
+    }
+
+    fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        if (requestCode != authorizationRequestCode) return
         val attempt = authorizationAttempt ?: return
         authorizationAttempt = null
+        authorizationRequestCode = null
         if (!authPending || destroyed || attempt != generation) return
         try {
             acceptAuthorization(attempt, manager.parseAuthorizationResult(resultCode, data))
@@ -101,6 +115,9 @@ internal class CxrlSessionProbe(
     private fun acceptAuthorization(attempt: Long, result: AuthResult) {
         if (destroyed || attempt != generation || !authPending) return
         authPending = false
+        // SDK 1.1.2 can return a cached grant directly, without launching an Activity.
+        authorizationAttempt = null
+        authorizationRequestCode = null
         clearDeadline()
         token = result.token?.takeIf { result.isSuccess && it.isNotBlank() }
         record(if (token != null) "用户授权成功；等待手动创建 Session"
@@ -235,6 +252,7 @@ internal class CxrlSessionProbe(
     }
 
     fun armPhoto(): PhotoGate.Request? {
+        if (displayTestPending) { record("请等待文字显示探针完成后再拍照"); return null }
         if (destroyed || !started) { record("拍照未就绪：等待 Session Started"); return null }
         val request = photos.arm(SystemClock.elapsedRealtime())
         if (request == null) record("请先关闭并重新授权/连接；每个 SDK Session 仅拍照一次")
@@ -365,6 +383,45 @@ internal class CxrlSessionProbe(
         record("request=${request.id} 佩戴者人工确认看见本次 Mock 文本；非 SDK 显示回执")
     }
 
+    fun testDisplay() {
+        val currentSession = session
+        if (destroyed || !started || currentSession == null || photos.current != null || displayTestPending) {
+            record("文字探针需要已 Started 且没有拍照请求的 Session")
+            return
+        }
+        val attempt = generation
+        val text = "DISPLAY TEST #${++displayTestSequence}"
+        val json = MockObservation.viewUpdate(text)
+        displayTestPending = true
+        record("文字探针开始：目标 title_text，预期眼镜文字 $text；不拍照、不生成 Mock")
+        displayTestDeadline = Runnable { stop("文字探针请求超时") }
+        handler.postDelayed(displayTestDeadline!!, 20_000L)
+        sdkExecutor.execute {
+            if (!destroyed && attempt == generation) {
+                try {
+                    val result = currentSession.customViewUpdate(json)
+                    handler.post {
+                        if (destroyed || attempt != generation) return@post
+                        clearDisplayTest()
+                        if (result.isSuccess) record("文字探针 SDK 已接受：$text；请现场核对是否更新")
+                        else record("文字探针失败：${result.code.name}")
+                    }
+                } catch (error: Exception) {
+                    handler.post { if (!destroyed && attempt == generation) {
+                        clearDisplayTest()
+                        record("文字探针异常：${error.javaClass.simpleName}")
+                    } }
+                }
+            }
+        }
+    }
+
+    private fun clearDisplayTest() {
+        displayTestDeadline?.let { handler.removeCallbacks(it) }
+        displayTestDeadline = null
+        displayTestPending = false
+    }
+
     private fun clearPhotoDeadline() {
         photoDeadline?.let { handler.removeCallbacks(it) }
         photoDeadline = null
@@ -411,7 +468,9 @@ internal class CxrlSessionProbe(
     fun stop(reason: String = "用户关闭 Session，撤销本地授权") {
         ++generation // Old SDK callbacks and authorization results cannot revive this attempt.
         clearDeadline()
+        clearDisplayTest()
         authPending = false
+        if (authorizationRequestCode == null) authorizationAttempt = null
         token = null
         started = false
         val failureStage = when {

@@ -112,3 +112,13 @@ node tools/summarize-cxrl-mvp.mjs <记录.json> > <报告.md>
 记录只保留在当前 Activity 的内存中，销毁或进程退出会丢失；冷启动测试每次完成后应先导出，各 JSON 的请求不能重叠。导出证据级别默认 unverified，用户人工确认也不自动升级为完整真机验收。Mock 耗时不能代表 Gemma 推理性能，Mock 文本不代表识别或安全辅助能力。重复真机样本、现场一致性和可见结果仍需人工检查。
 
 本轮 v0.2.0 最终本机构建采用完整 Oracle JDK 25.0.2 + Gradle 9.2.0（Java/Kotlin 目标 17），APK、原生测试与 lint 通过。此前 JBR 21 没有 jlink，启用 BuildConfig 生成 Java 后不能用于完整构建；CI 使用完整 Temurin JDK 21。未修改系统 JAVA_HOME。
+
+## v0.2.1 真机反馈修复
+
+用户实机日志已显示授权成功、connect 回调 success=true、Session Started 和眼镜蓝牙状态 true。随后点手动恢复，旧 Session 被关闭，但一直提示等待授权页面返回。手机已有现场照片、眼镜仍是初始 probe 的反馈亦已收到；其最新 Mock/显示请求日志尚待核对，不能据此宣布显示已成功或显示根因已定位。
+
+核对真实 1.1.2 AAR，`AuthorizationHelper.requestAuthorization` 可直接从官方 App 的授权内容提供者取得既有授权，并同步回调成功，不启动 Activity；也可用 SDK 分配的动态 requestCode 启动授权 Activity。旧版本把两种路径都当作必有页面返回，未在直接回调时释放等待标志。
+
+v0.2.1 在 SDK 授权结果完成后清理等待标志；真正启动官方授权页时，由宿主捕获实际 requestCode 并匹配返回。无外部页面的取消可以立即重试；有尚未返回的旧授权页时，仍先消费旧返回，防止过期结果被交给新请求。缓存回调、Activity 返回、重复回调、超时及旧代号拒收分别测试。手动恢复按钮明确标出会关闭旧连接。
+
+另提供“测试眼镜文字更新（不拍照）”：仅在已 Started 且未开始拍照时发送 `DISPLAY TEST #…`，直接检查 CUSTOM_VIEW 更新是否实际可见。该探针不产生 ObservationResult、不生成 Mock、不计入图片验收，也不能打断正在采集的请求。SDK 接受仍不等于实际看见；若手机有图片但眼镜仍是 probe，请核对“Mock 完成”“SDK 显示更新被接受/失败/超时”日志，再用全新 Session 做文字探针对照。

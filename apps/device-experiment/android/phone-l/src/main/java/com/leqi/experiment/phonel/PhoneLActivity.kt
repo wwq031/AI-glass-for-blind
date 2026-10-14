@@ -56,8 +56,9 @@ class PhoneLActivity : Activity() {
         action("请求官方授权（不拍照）") { withBluetoothPermission { probe.authorize() } }
         action("创建并连接 CUSTOM_VIEW Session") { withBluetoothPermission { probe.connect() } }
         action("刷新 Session 与蓝牙状态") { withBluetoothPermission { probe.refresh() } }
+        action("测试眼镜文字更新（不拍照）") { probe.testDisplay() }
         action("关闭 Session / 取消授权") { probe.stop() }
-        action("手动恢复：重新请求授权") { withBluetoothPermission { probe.manualRecover() } }
+        action("手动恢复（关闭旧连接，重新授权）") { withBluetoothPermission { probe.manualRecover() } }
         action("测试口径：冷启动") { probe.setStartKind("cold") }
         action("测试口径：热运行") { probe.setStartKind("warm") }
         action("记录眼镜固件版本") {
@@ -141,6 +142,16 @@ class PhoneLActivity : Activity() {
     }
 
     @Suppress("DEPRECATION")
+    @Deprecated("CXR-L launches authorization through startActivityForResult.")
+    override fun startActivityForResult(intent: Intent, requestCode: Int) {
+        super.startActivityForResult(intent, requestCode)
+        if (::probe.isInitialized && intent.component?.className ==
+            "com.rokid.sprite.aiapp.externalapp.auth.AuthorizationActivity") {
+            probe.onAuthorizationActivityLaunched(requestCode)
+        }
+    }
+
+    @Suppress("DEPRECATION")
     @Deprecated("Official CXR-L authorization requires forwarding the Activity result.")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -171,7 +182,7 @@ class PhoneLActivity : Activity() {
             exportPending = false
             return
         }
-        if (::probe.isInitialized) probe.onActivityResult(resultCode, data)
+        if (::probe.isInitialized) probe.onActivityResult(requestCode, resultCode, data)
     }
 
     private fun recordVersions(firmware: String = glassesFirmware): JSONObject {

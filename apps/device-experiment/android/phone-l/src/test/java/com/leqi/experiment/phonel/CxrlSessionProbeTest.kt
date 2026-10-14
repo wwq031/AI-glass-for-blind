@@ -54,7 +54,11 @@ class CxrlSessionProbeTest {
         var lastEvents: IGlassesEventListener? = null
         var displayCode = SessionErrorCode.OK
         var initialIdleEvents = false
-        private val auth = AuthResult(true, "unit-test-token-never-logged", SessionErrorCode.OK, null)
+        var directAuthorization = true
+        var authRequests = 0
+        var parseCalls = 0
+        val authCallbacks = mutableListOf<(AuthResult) -> Unit>()
+        val auth = AuthResult(true, "unit-test-token-never-logged", SessionErrorCode.OK, null)
         private fun sdkSession(): CxrSession = Proxy.newProxyInstance(CxrSession::class.java.classLoader,
             arrayOf(CxrSession::class.java)) { _, method, args ->
             when (method.name) {
@@ -76,25 +80,28 @@ class CxrlSessionProbeTest {
                 else -> error("Unexpected SDK call: ${method.name}")
             }
         } as CxrSession
-        private val manager = Proxy.newProxyInstance(CxrSessionManager::class.java.classLoader,
+        private val manager: CxrSessionManager = Proxy.newProxyInstance(CxrSessionManager::class.java.classLoader,
             arrayOf(CxrSessionManager::class.java)) { _, method, args ->
             when (method.name) {
                 "isRokidAppInstalled", "isGlassesBtConnected" -> true
                 "checkRokidAppCompatibility" -> RokidAppStatus.Compatible("1.11.0")
-                "parseAuthorizationResult" -> auth
+                "parseAuthorizationResult" -> { parseCalls++; authCallbacks.last().invoke(auth); auth }
                 "requestAuthorization" -> {
+                    authRequests++
                     @Suppress("UNCHECKED_CAST")
-                    (args!![2] as (AuthResult) -> Unit)(auth)
+                    val callback = args!![2] as (AuthResult) -> Unit
+                    authCallbacks.add(callback)
+                    if (directAuthorization) callback(auth)
+                    else probe.onAuthorizationActivityLaunched(1000 + authRequests)
                     null
                 }
                 "create" -> sdkSession()
                 else -> error("Unexpected manager call: ${method.name}")
             }
         } as CxrSessionManager
-        val probe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor)
+        val probe: CxrlSessionProbe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor)
         fun connect() {
             probe.authorize()
-            probe.onActivityResult(Activity.RESULT_OK, null)
             idle()
             probe.connect()
             idle()
@@ -200,7 +207,7 @@ class CxrlSessionProbeTest {
         old.onSessionResumed(); idle()
         assertNull(fixture.probe.armPhoto())
         fixture.probe.manualRecover()
-        fixture.probe.onActivityResult(Activity.RESULT_OK, null); idle()
+        idle()
         fixture.probe.connect(); idle()
         fixture.capture(); fixture.deliver(jpeg())
         assertEquals(1, fixture.updates.size)
@@ -226,6 +233,76 @@ class CxrlSessionProbeTest {
         fixture.initialIdleEvents = true
         fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
         assertEquals(0, fixture.closes)
+        assertEquals(1, fixture.updates.size)
+        fixture.probe.destroy()
+    }
+    @Test fun cachedGrantWithoutAnyActivityResultCanRecoverAndCaptureAgain() {
+        val fixture = Fixture()
+        fixture.connect()
+        fixture.probe.manualRecover(); idle()
+        fixture.probe.connect(); idle()
+        fixture.capture(); fixture.deliver(jpeg())
+        assertEquals(2, fixture.authRequests)
+        assertEquals(0, fixture.parseCalls)
+        assertEquals(1, fixture.updates.size)
+        assertTrue(fixture.lines.none { it.contains("等待上一次") })
+        fixture.probe.destroy()
+    }
+    @Test fun callbackCancelledBeforeDeliveryCannotBlockRetryOrReviveOldAuthorization() {
+        val fixture = Fixture()
+        fixture.probe.authorize() // Its cached result is queued on the main looper.
+        fixture.probe.stop()
+        fixture.probe.authorize()
+        idle()
+        fixture.probe.connect(); idle()
+        assertEquals(2, fixture.authRequests)
+        assertNotNull(fixture.probe.armPhoto())
+        assertEquals(1, fixture.lines.count { it.contains("用户授权成功") })
+        fixture.probe.destroy()
+    }
+    @Test fun interactiveAuthorizationUsesActualRequestCodeAndIgnoresUnrelatedResults() {
+        val fixture = Fixture()
+        fixture.directAuthorization = false
+        fixture.probe.authorize()
+        fixture.probe.onActivityResult(1234, Activity.RESULT_OK, null); idle()
+        assertEquals(0, fixture.parseCalls)
+        fixture.probe.onActivityResult(1001, Activity.RESULT_OK, null); idle()
+        fixture.probe.connect(); idle()
+        assertNotNull(fixture.probe.armPhoto())
+        assertEquals(1, fixture.parseCalls)
+        assertEquals(1, fixture.lines.count { it.contains("用户授权成功") })
+        fixture.probe.destroy()
+    }
+    @Test fun timedOutInteractiveGrantCannotBeMappedToANewerAuthorization() {
+        val fixture = Fixture()
+        fixture.directAuthorization = false
+        fixture.probe.authorize()
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(61))
+        fixture.probe.manualRecover()
+        assertEquals(1, fixture.authRequests) // Old external UI must return first.
+        fixture.probe.onActivityResult(1001, Activity.RESULT_OK, null); idle()
+        assertEquals(0, fixture.parseCalls)
+        fixture.probe.manualRecover()
+        fixture.authCallbacks.first().invoke(fixture.auth)
+        fixture.probe.onActivityResult(1001, Activity.RESULT_OK, null); idle()
+        assertEquals(0, fixture.parseCalls)
+        fixture.probe.onActivityResult(1002, Activity.RESULT_OK, null); idle()
+        fixture.probe.connect(); idle()
+        assertEquals(2, fixture.authRequests)
+        assertNotNull(fixture.probe.armPhoto())
+        fixture.probe.destroy()
+    }
+    @Test fun standaloneDisplayProbeDoesNotFakePhotoOrMockAndCannotInterruptCapture() {
+        val fixture = Fixture()
+        fixture.probe.testDisplay()
+        assertTrue(fixture.updates.isEmpty())
+        fixture.connect(); fixture.probe.testDisplay(); idle()
+        assertEquals(1, fixture.updates.size)
+        assertTrue(fixture.updates.single().contains("DISPLAY TEST #1"))
+        assertFalse(fixture.updates.single().contains("Mock"))
+        assertEquals(0, fixture.captures)
+        assertEquals(0, fixture.probe.exportRecords().getJSONArray("runs").length())
+        fixture.capture(); fixture.probe.testDisplay(); idle()
         assertEquals(1, fixture.updates.size)
         fixture.probe.destroy()
     }
