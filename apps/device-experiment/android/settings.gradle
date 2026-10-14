@@ -14,6 +14,10 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = 'LeqiDeviceExperiment'
-include ':phone-bt', ':glasses-bt'
-project(':phone-bt').projectDir = file('../../phone-companion/android')
-project(':glasses-bt').projectDir = file('../../glasses-agent/android')
+include ':phone-l'
+// The probe can be built without configuring the model/TTS-dependent phone host.
+if (!providers.gradleProperty('cxrlProbeOnly').map { it.toBoolean() }.getOrElse(false)) {
+    include ':phone-bt', ':glasses-bt'
+    project(':phone-bt').projectDir = file('../../phone-companion/android')
+    project(':glasses-bt').projectDir = file('../../glasses-agent/android')
+}
