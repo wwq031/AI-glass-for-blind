@@ -48,6 +48,7 @@ class PhoneLActivity : Activity() {
         action("创建并连接 CUSTOM_VIEW Session") { withBluetoothPermission { probe.connect() } }
         action("刷新 Session 与蓝牙状态") { withBluetoothPermission { probe.refresh() } }
         action("关闭 Session / 取消授权") { probe.stop() }
+        action("手动恢复：重新请求授权") { withBluetoothPermission { probe.manualRecover() } }
         action("拍照：打开本次确认窗口") {
             val request = probe.armPhoto()
             if (request != null) AlertDialog.Builder(this)
@@ -124,6 +125,11 @@ class PhoneLActivity : Activity() {
     override fun onDestroy() {
         if (::probe.isInitialized) probe.destroy()
         super.onDestroy()
+    }
+
+    override fun onStop() {
+        if (::probe.isInitialized) probe.hostBackground()
+        super.onStop()
     }
 
     private fun openCompanion() {

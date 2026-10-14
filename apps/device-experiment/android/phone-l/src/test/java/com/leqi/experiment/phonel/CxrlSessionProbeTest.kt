@@ -16,6 +16,7 @@ import java.io.ByteArrayOutputStream
 import java.lang.reflect.Proxy
 import java.time.Duration
 import java.util.concurrent.AbstractExecutorService
+import java.util.concurrent.ExecutorService
 import java.util.concurrent.TimeUnit
 
 @RunWith(RobolectricTestRunner::class)
@@ -31,7 +32,18 @@ class CxrlSessionProbeTest {
         override fun awaitTermination(timeout: Long, unit: TimeUnit) = stopped
         override fun execute(command: Runnable) { check(!stopped); command.run() }
     }
-    private class Fixture {
+    private class QueuedExecutor : AbstractExecutorService() {
+        val work = ArrayDeque<Runnable>()
+        private var stopped = false
+        override fun shutdown() { stopped = true }
+        override fun shutdownNow(): MutableList<Runnable> { stopped = true; return work.toMutableList().also { work.clear() } }
+        override fun isShutdown() = stopped
+        override fun isTerminated() = stopped && work.isEmpty()
+        override fun awaitTermination(timeout: Long, unit: TimeUnit) = isTerminated
+        override fun execute(command: Runnable) { check(!stopped); work.addLast(command) }
+        fun drain() { while (work.isNotEmpty()) work.removeFirst().run() }
+    }
+    private class Fixture(sdkExecutor: ExecutorService = DirectExecutor()) {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val lines = mutableListOf<String>()
         val updates = mutableListOf<String>()
@@ -39,6 +51,7 @@ class CxrlSessionProbeTest {
         var closes = 0
         var lastLifecycle: ISessionLifecycleCbk? = null
         var lastImages: IImageCallback? = null
+        var lastEvents: IGlassesEventListener? = null
         var displayCode = SessionErrorCode.OK
         private val auth = AuthResult(true, "unit-test-token-never-logged", SessionErrorCode.OK, null)
         private fun sdkSession(): CxrSession = Proxy.newProxyInstance(CxrSession::class.java.classLoader,
@@ -46,7 +59,8 @@ class CxrlSessionProbeTest {
             when (method.name) {
                 "addLifecycleCallback" -> { lastLifecycle = args!![0] as ISessionLifecycleCbk; null }
                 "addImageCallback" -> { lastImages = args!![0] as IImageCallback; null }
-                "removeLifecycleCallback", "removeImageCallback" -> null
+                "addGlassesEventListener" -> { lastEvents = args!![0] as IGlassesEventListener; null }
+                "removeLifecycleCallback", "removeImageCallback", "removeGlassesEventListener" -> null
                 "connect" -> { lastLifecycle!!.onConnectResult(true, null); lastLifecycle!!.onSessionStarted(); null }
                 "close" -> { closes++; null }
                 "takePhoto" -> { captures++; SessionResult(SessionErrorCode.OK, Unit, null) }
@@ -69,7 +83,7 @@ class CxrlSessionProbeTest {
                 else -> error("Unexpected manager call: ${method.name}")
             }
         } as CxrSessionManager
-        val probe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor())
+        val probe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor)
         fun connect() {
             probe.authorize()
             probe.onActivityResult(Activity.RESULT_OK, null)
@@ -149,5 +163,47 @@ class CxrlSessionProbeTest {
         assertTrue(fixture.lines.none { it.contains("人工确认看见") })
         assertEquals(1, fixture.closes)
         fixture.probe.destroy()
+    }
+    @Test fun backgroundAndGlassesScreenOffCloseSessionAndRejectPendingResults() {
+        for (screenOff in listOf(false, true)) {
+            val fixture = Fixture()
+            fixture.connect(); fixture.capture()
+            if (screenOff) { fixture.lastEvents!!.onScreenOff(); idle() }
+            else fixture.probe.hostBackground()
+            fixture.deliver(jpeg())
+            assertTrue(fixture.updates.isEmpty())
+            assertNull(fixture.probe.armPhoto())
+            assertEquals(1, fixture.closes)
+            fixture.probe.destroy()
+        }
+    }
+    @Test fun pauseDuringCaptureCannotResumeOldConsentAndManualRecoveryWorks() {
+        val fixture = Fixture()
+        fixture.connect(); fixture.capture()
+        val old = fixture.lastLifecycle!!
+        old.onSessionPaused(PausedReason.BT_DISCONNECTED); idle()
+        old.onSessionResumed(); idle()
+        assertNull(fixture.probe.armPhoto())
+        fixture.probe.manualRecover()
+        fixture.probe.onActivityResult(Activity.RESULT_OK, null); idle()
+        fixture.probe.connect(); idle()
+        fixture.capture(); fixture.deliver(jpeg())
+        assertEquals(1, fixture.updates.size)
+        fixture.probe.destroy()
+    }
+    @Test fun queuedDisplayCannotSendAfterUiTimeoutAndPrematureVisibleConfirmationIsRejected() {
+        val executor = QueuedExecutor()
+        val fixture = Fixture(executor)
+        fixture.connect(); executor.drain(); idle(); executor.drain(); idle()
+        fixture.capture(); executor.drain(); idle()
+        fixture.deliver(jpeg()) // SDK display work remains queued.
+        fixture.probe.confirmVisible()
+        assertTrue(fixture.lines.none { it.contains("人工确认看见") })
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(21))
+        executor.drain(); idle()
+        assertTrue(fixture.updates.isEmpty())
+        assertEquals(1, fixture.closes)
+        assertTrue(fixture.lines.any { it.contains("显示请求超时") })
+        fixture.probe.destroy(); executor.drain()
     }
 }
