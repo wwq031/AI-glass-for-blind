@@ -70,3 +70,13 @@ SDK `IImageCallback` 没有请求 ID，因此每个 SDK Session 只允许一次�
 原始 WebP/JPEG 在有界内存内解码和预览，不写相册、不输出图片正文。检查完整容器、最大 12 MiB、支持 MIME、尺寸及实际 Bitmap 解码；最大边长 4096、最大 1200 万像素。官方 1.1.2 原始 WebP 保持原格式，不伪称已收到 JPEG；只有后续合同要求 JPEG 时才另行转换。
 
 软件测试包含授权窗口、取消、暂停、重复/晚到图片、单 Session 单拍照约束，以及 Robolectric 原生 JPEG/WebP 解码、损坏/截断/超限/非支持格式。它们不执行真实摄像头或官方 App；现场内容、设备图片回调和真机预览仍需验收。
+
+## 独立 Mock 闭环（#23 离线实现）
+
+真实有效图片解码完成后，自动调用确定性的 Mock 观察替身，然后通过同一 SDK Session 的 `customViewUpdate` 更新 `title_text`。增量更新使用官方 Sample 的 JSON 数组格式并正确转义文本。手机只播报脱敏状态，不调用 Gemma、TTS、地图、云端或第二套业务 Agent。
+
+Mock 复用仓库 ObservationResult 字段，保留 session_id/request_id/capability_id（vision.scene），输出明确的 `Mock：图片已收到 … #<请求代号>`，confidence=unknown、status=partial、facts 为空。它证明通信路径，不进行真实视觉识别、安全判断或模型性能验收。
+
+无有效图片、损坏、取消、断连或过期回调不会进入 Mock；显示更新失败如实记录并结束旧 Session。SDK 接受更新与眼镜实际显示分别记录。只有佩戴者现场核对相同请求代号后，才能点“人工确认眼镜看见本次 Mock 文本”，该记录明确属于人工确认，不伪称 SDK 显示回执。
+
+尚未采集真机闭环证据。断开互联网后的本地链路、实际图片和眼镜显示须在当前官方 App/固件组合上验证；本 APK 没有新增远程模型调用。
