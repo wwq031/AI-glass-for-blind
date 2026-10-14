@@ -22,6 +22,7 @@ import com.rokid.cxr.session.TerminatingReason
 import java.util.UUID
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
+import java.util.concurrent.ExecutorService
 
 /** Standalone communication diagnostic; capture requires explicit per-request consent. */
 internal class CxrlSessionProbe(
@@ -29,6 +30,7 @@ internal class CxrlSessionProbe(
     private val manager: CxrSessionManager,
     private val report: (String) -> Unit,
     private val preview: (DecodedPhoto?) -> Unit,
+    private val decoder: ExecutorService = Executors.newSingleThreadExecutor(),
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val origin = SystemClock.elapsedRealtime()
@@ -42,11 +44,12 @@ internal class CxrlSessionProbe(
     private var deadline: Runnable? = null
     private var destroyed = false
     private val photos = PhotoGate()
-    private val decoder = Executors.newSingleThreadExecutor()
     private var decodeJob: Future<*>? = null
     private var imageCallback: IImageCallback? = null
     private var photoDeadline: Runnable? = null
     private var decodedPhoto: DecodedPhoto? = null
+    private var displayRequest: String? = null
+    private var visibleConfirmed = false
 
     fun authorize() {
         if (destroyed || authPending || session != null) return
@@ -246,8 +249,38 @@ internal class CxrlSessionProbe(
                 preview(photo)
                 val meta = photo.metadata
                 record("request=${request.id} 图片已验证 ${meta.mime} ${meta.width}x${meta.height} bytes=${meta.bytes}")
+                runMock(request, photo)
             }
         }
+    }
+
+    private fun runMock(request: PhotoGate.Request, photo: DecodedPhoto) {
+        val currentSession = session ?: return
+        if (destroyed || !started || photos.current !== request || displayRequest != null) return
+        try {
+            record("request=${request.id} Mock 开始；无模型/TTS/地图/云端依赖")
+            val result = MockObservation.create(request, photo.metadata)
+            record("request=${request.id} Mock 完成：${result.getString("summary")}")
+            displayRequest = request.id
+            val update = currentSession.customViewUpdate(MockObservation.viewUpdate(result.getString("summary")))
+            if (!update.isSuccess) {
+                stop("request=${request.id} 显示请求失败：${update.code.name}")
+                return
+            }
+            record("request=${request.id} SDK 显示更新被接受；眼镜实际可见仍待人工核对")
+        } catch (error: Exception) {
+            stop("request=${request.id} Mock/显示异常：${error.javaClass.simpleName}")
+        }
+    }
+
+    fun confirmVisible() {
+        val request = photos.current
+        if (request == null || request.id != displayRequest || !started || visibleConfirmed) {
+            record("没有可确认的本次显示请求")
+            return
+        }
+        visibleConfirmed = true
+        record("request=${request.id} 佩戴者人工确认看见本次 Mock 文本；非 SDK 显示回执")
     }
 
     private fun clearPhotoDeadline() {
@@ -262,6 +295,8 @@ internal class CxrlSessionProbe(
         preview(null)
         decodedPhoto?.bitmap?.recycle()
         decodedPhoto = null
+        displayRequest = null
+        visibleConfirmed = false
     }
 
     fun refresh() {

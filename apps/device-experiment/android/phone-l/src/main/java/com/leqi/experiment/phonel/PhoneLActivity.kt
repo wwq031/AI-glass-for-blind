@@ -52,13 +52,19 @@ class PhoneLActivity : Activity() {
             val request = probe.armPhoto()
             if (request != null) AlertDialog.Builder(this)
                 .setTitle("确认本次眼镜拍照")
-                .setMessage("仅拍摄一张照片，在手机内存中预览。请求：${request.id}")
+                .setMessage("仅拍摄一张照片，在手机内存中预览；有效图片到达后自动发送明确标记的 Mock 文本到眼镜。请求：${request.id}")
                 .setPositiveButton("确认拍照") { _, _ -> probe.confirmPhoto(request.id) }
                 .setNegativeButton("取消") { _, _ -> probe.cancelPhoto() }
                 .setOnCancelListener { probe.cancelPhoto() }
                 .show()
         }
         action("取消本次图片接收") { probe.cancelPhoto() }
+        action("人工确认眼镜看见本次 Mock 文本") {
+            AlertDialog.Builder(this).setTitle("仅在现场实际看见后确认")
+                .setMessage("请核对眼镜 Mock 文本中的请求代号与下方手机记录一致。发送成功或手机预览不能替代此项。")
+                .setPositiveButton("已看见对应文本") { _, _ -> probe.confirmVisible() }
+                .setNegativeButton("未确认", null).show()
+        }
         val image = ImageView(this).apply { adjustViewBounds = true }
         content.addView(image, LinearLayout.LayoutParams(-1, 360))
         trace = TextView(this).apply { textSize = 14f }
@@ -89,7 +95,7 @@ class PhoneLActivity : Activity() {
             val installed = manager.isRokidAppInstalled(applicationContext)
             val compatibility = manager.checkRokidAppCompatibility(applicationContext)
             val compatible = compatibility is RokidAppStatus.Compatible
-            status.text = "CXR-L 1.1.2 独立探针\n" +
+            status.text = "CXR-L 1.1.2 独立 Mock 通信调试\n" +
                 "官方 App 安装：$installed\n版本兼容：$compatible\n" +
                 "Session 阶段见下方脱敏记录；拍照、显示：未验收\n" +
                 "请先在官方 App 完成真实连接与拍照检查。"
