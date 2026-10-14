@@ -12,18 +12,23 @@ import com.rokid.cxr.session.CxrSession
 import com.rokid.cxr.session.CxrSessionManager
 import com.rokid.cxr.session.GlassPermission
 import com.rokid.cxr.session.ISessionLifecycleCbk
+import com.rokid.cxr.session.IImageCallback
 import com.rokid.cxr.session.PausedReason
 import com.rokid.cxr.session.RokidAppStatus
 import com.rokid.cxr.session.SessionConfig
 import com.rokid.cxr.session.SessionErrorCode
 import com.rokid.cxr.session.SessionType
 import com.rokid.cxr.session.TerminatingReason
+import java.util.UUID
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
-/** Diagnostic SDK lifecycle only. It never requests a photo or starts business work. */
+/** Standalone communication diagnostic; capture requires explicit per-request consent. */
 internal class CxrlSessionProbe(
     private val activity: Activity,
     private val manager: CxrSessionManager,
     private val report: (String) -> Unit,
+    private val preview: (DecodedPhoto?) -> Unit,
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val origin = SystemClock.elapsedRealtime()
@@ -36,6 +41,12 @@ internal class CxrlSessionProbe(
     private var started = false
     private var deadline: Runnable? = null
     private var destroyed = false
+    private val photos = PhotoGate()
+    private val decoder = Executors.newSingleThreadExecutor()
+    private var decodeJob: Future<*>? = null
+    private var imageCallback: IImageCallback? = null
+    private var photoDeadline: Runnable? = null
+    private var decodedPhoto: DecodedPhoto? = null
 
     fun authorize() {
         if (destroyed || authPending || session != null) return
@@ -96,6 +107,8 @@ internal class CxrlSessionProbe(
                 viewData = VIEW_DATA.replace("CXR-L probe", "CXR-L probe #$attempt"),
             ))
             session = created
+            val photoSession = UUID.randomUUID().toString()
+            var photoSessionInitialized = false
             val callback = object : ISessionLifecycleCbk {
                 private fun dispatch(action: () -> Unit) {
                     handler.post {
@@ -110,22 +123,34 @@ internal class CxrlSessionProbe(
                 override fun onSessionStarted() = dispatch {
                     started = true
                     clearDeadline()
+                    if (!photoSessionInitialized) {
+                        photos.newSession(photoSession)
+                        photoSessionInitialized = true
+                    }
                     record("SDK Session Started；请在眼镜核对 CXR-L probe 文本")
                     record("眼镜可见反馈：尚未由佩戴者验收")
                     reportBluetooth()
                 }
                 override fun onSessionPaused(reason: PausedReason) = dispatch {
                     started = false
+                    if (photos.current?.confirmedAt != null) {
+                        stop("拍照期间 Session 暂停：${reason.name}；拒收旧图片")
+                        return@dispatch
+                    }
+                    photos.pause()
                     record("SDK Session Paused：${reason.name}")
                     armDeadline("Session 暂停后未恢复", attempt, 60_000L)
                 }
                 override fun onSessionResumed() = dispatch {
                     started = true
+                    photos.resume()
                     clearDeadline()
                     record("SDK Session Resumed；未恢复任何采集授权")
                 }
                 override fun onSessionTerminating(reason: TerminatingReason, gracePeriodMs: Long) = dispatch {
                     started = false
+                    clearPhoto()
+                    photos.pause()
                     record("SDK Session Terminating：${reason.name}")
                     armDeadline("Session 关闭回调超时", attempt, gracePeriodMs.coerceIn(0L, 30_000L) + 5_000L)
                 }
@@ -135,6 +160,26 @@ internal class CxrlSessionProbe(
             }
             lifecycle = callback
             created.addLifecycleCallback(callback)
+            val images = object : IImageCallback {
+                override fun onImageReceived(data: ByteArray) {
+                    val safeData = if (data.size <= PhotoDecoder.MAX_BYTES) data.copyOf() else null
+                    handler.post {
+                        if (!destroyed && attempt == generation && session === created) {
+                            receiveImage(safeData, attempt)
+                        }
+                    }
+                }
+                override fun onImageError(errorCode: SessionErrorCode, v1ErrorCode: Int, v1ErrorMessage: String?) {
+                    handler.post {
+                        if (!destroyed && attempt == generation && session === created &&
+                            photos.current?.confirmedAt != null) {
+                            stop("图片回调失败：${errorCode.name} native=$v1ErrorCode")
+                        }
+                    }
+                }
+            }
+            imageCallback = images
+            created.addImageCallback(images)
             record("Session 已创建，回调已注册；开始 connect，等待连接回调及 Started")
             armDeadline("连接/Started 超时", attempt, 30_000L)
             created.connect(localToken)
@@ -142,6 +187,81 @@ internal class CxrlSessionProbe(
         } catch (error: Exception) {
             stop("创建/连接异常：${error.javaClass.simpleName}")
         }
+    }
+
+    fun armPhoto(): PhotoGate.Request? {
+        if (destroyed || !started) { record("拍照未就绪：等待 Session Started"); return null }
+        val request = photos.arm(SystemClock.elapsedRealtime())
+        if (request == null) record("请先关闭并重新授权/连接；每个 SDK Session 仅拍照一次")
+        else {
+            record("request=${request.id} 等待用户明确确认；尚未调用相机")
+            photoDeadline = Runnable { cancelPhoto("拍照确认窗口过期") }
+            handler.postDelayed(photoDeadline!!, PhotoGate.TIMEOUT_MS)
+        }
+        return request
+    }
+
+    fun confirmPhoto(id: String) {
+        val currentSession = session ?: return
+        val request = photos.confirm(id, SystemClock.elapsedRealtime()) ?: run {
+            record("拍照确认无效或过期")
+            return
+        }
+        clearPhotoDeadline()
+        photoDeadline = Runnable { stop("request=${request.id} 图片接收/解码超时") }
+        handler.postDelayed(photoDeadline!!, PhotoGate.TIMEOUT_MS)
+        record("request=${request.id} 用户确认；调用 takePhoto(640,480,80)")
+        try {
+            val result = currentSession.takePhoto(640, 480, 80)
+            if (!result.isSuccess) stop("request=${request.id} 拍照请求失败：${result.code.name}")
+            else record("request=${request.id} 拍照请求被接受；等待有效图片")
+        } catch (error: Exception) {
+            stop("request=${request.id} 拍照异常：${error.javaClass.simpleName}")
+        }
+    }
+
+    fun cancelPhoto(reason: String = "用户取消拍照") {
+        if (photos.current?.confirmedAt != null) { stop(reason); return }
+        clearPhotoDeadline()
+        photos.cancel()
+        record(reason)
+    }
+
+    private fun receiveImage(data: ByteArray?, attempt: Long) {
+        val request = photos.current ?: return
+        if (!photos.receive(request.id, SystemClock.elapsedRealtime())) return
+        if (data == null || data.isEmpty()) { stop("request=${request.id} 图片为空或超过大小限制"); return }
+        record("request=${request.id} 完整图片回调 bytes=${data.size}；开始解码校验")
+        decodeJob = decoder.submit {
+            val photo = try { PhotoDecoder.decode(data) } catch (_: Exception) { null }
+            handler.post {
+                if (destroyed || attempt != generation ||
+                    !photos.validated(request.id, SystemClock.elapsedRealtime())) {
+                    photo?.bitmap?.recycle()
+                    return@post
+                }
+                if (photo == null) { stop("request=${request.id} 图片格式/尺寸/解码校验失败"); return@post }
+                clearPhotoDeadline()
+                decodedPhoto = photo
+                preview(photo)
+                val meta = photo.metadata
+                record("request=${request.id} 图片已验证 ${meta.mime} ${meta.width}x${meta.height} bytes=${meta.bytes}")
+            }
+        }
+    }
+
+    private fun clearPhotoDeadline() {
+        photoDeadline?.let { handler.removeCallbacks(it) }
+        photoDeadline = null
+    }
+
+    private fun clearPhoto() {
+        clearPhotoDeadline()
+        decodeJob?.cancel(true)
+        decodeJob = null
+        preview(null)
+        decodedPhoto?.bitmap?.recycle()
+        decodedPhoto = null
     }
 
     fun refresh() {
@@ -163,13 +283,18 @@ internal class CxrlSessionProbe(
         authPending = false
         token = null
         started = false
+        photos.close()
+        clearPhoto()
         val oldSession = session
         val oldCallback = lifecycle
+        val oldImages = imageCallback
         session = null
         lifecycle = null
+        imageCallback = null
         if (oldSession != null) {
             try {
                 if (oldCallback != null) oldSession.removeLifecycleCallback(oldCallback)
+                if (oldImages != null) oldSession.removeImageCallback(oldImages)
             } catch (error: Exception) {
                 record("移除回调异常：${error.javaClass.simpleName}")
             }
@@ -184,6 +309,7 @@ internal class CxrlSessionProbe(
         destroyed = true
         stop("Activity 退出，已执行 Session 清理")
         handler.removeCallbacksAndMessages(null)
+        decoder.shutdownNow()
     }
 
     private fun armDeadline(reason: String, attempt: Long, delay: Long) {
