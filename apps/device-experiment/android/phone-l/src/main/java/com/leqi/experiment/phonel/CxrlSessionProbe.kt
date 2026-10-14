@@ -13,6 +13,8 @@ import com.rokid.cxr.session.CxrSessionManager
 import com.rokid.cxr.session.GlassPermission
 import com.rokid.cxr.session.ISessionLifecycleCbk
 import com.rokid.cxr.session.IImageCallback
+import com.rokid.cxr.session.IGlassesEventListener
+import com.rokid.cxr.session.GlassesInfo
 import com.rokid.cxr.session.PausedReason
 import com.rokid.cxr.session.RokidAppStatus
 import com.rokid.cxr.session.SessionConfig
@@ -31,10 +33,11 @@ internal class CxrlSessionProbe(
     private val report: (String) -> Unit,
     private val preview: (DecodedPhoto?) -> Unit,
     private val decoder: ExecutorService = Executors.newSingleThreadExecutor(),
+    private val sdkExecutor: ExecutorService = Executors.newSingleThreadExecutor(),
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val origin = SystemClock.elapsedRealtime()
-    private var generation = 0L
+    @Volatile private var generation = 0L
     private var authPending = false
     private var authorizationAttempt: Long? = null
     private var token: String? = null
@@ -42,7 +45,7 @@ internal class CxrlSessionProbe(
     private var lifecycle: ISessionLifecycleCbk? = null
     private var started = false
     private var deadline: Runnable? = null
-    private var destroyed = false
+    @Volatile private var destroyed = false
     private val photos = PhotoGate()
     private var decodeJob: Future<*>? = null
     private var imageCallback: IImageCallback? = null
@@ -50,6 +53,8 @@ internal class CxrlSessionProbe(
     private var decodedPhoto: DecodedPhoto? = null
     private var displayRequest: String? = null
     private var visibleConfirmed = false
+    private var displayAccepted = false
+    private var glassesListener: IGlassesEventListener? = null
 
     fun authorize() {
         if (destroyed || authPending || session != null) return
@@ -183,9 +188,37 @@ internal class CxrlSessionProbe(
             }
             imageCallback = images
             created.addImageCallback(images)
+            val events = object : IGlassesEventListener {
+                private fun dispatch(action: () -> Unit) {
+                    handler.post { if (!destroyed && attempt == generation && session === created) action() }
+                }
+                override fun onGlassesAppResumed() = dispatch { record("眼镜应用恢复；未重开采集授权") }
+                override fun onGlassesAppPaused() = dispatch { stop("眼镜应用暂停，关闭本次 Session") }
+                override fun onWearingStatusChanged(wearing: Boolean) = dispatch {
+                    record("眼镜佩戴状态：$wearing")
+                    if (!wearing) cancelPhoto("摘下眼镜，撤销本次拍照确认")
+                }
+                override fun onDeviceInfoChanged(info: GlassesInfo) = dispatch { record("设备信息更新；不记录设备标识") }
+                override fun onScreenOff() = dispatch { stop("眼镜灭屏，关闭本次 Session") }
+                override fun onScreenOn() = dispatch { record("眼镜亮屏；未自动授权或采集") }
+                override fun onLauncherResumed() = dispatch { stop("眼镜返回桌面，关闭本次 Session") }
+                override fun onAiWake() = dispatch { cancelPhoto("官方助手唤醒，撤销本次拍照确认") }
+                override fun onAiInterruptChanged(interrupted: Boolean) = dispatch {
+                    if (interrupted) cancelPhoto("官方助手中断，撤销本次拍照确认")
+                }
+            }
+            glassesListener = events
+            created.addGlassesEventListener(events)
             record("Session 已创建，回调已注册；开始 connect，等待连接回调及 Started")
             armDeadline("连接/Started 超时", attempt, 30_000L)
-            created.connect(localToken)
+            sdkExecutor.execute {
+                if (!destroyed && attempt == generation) {
+                    try { created.connect(localToken) } catch (error: Exception) {
+                        handler.post { if (attempt == generation && !destroyed)
+                            stop("连接异常：${error.javaClass.simpleName}") }
+                    }
+                }
+            }
             // connect() returns Unit in 1.1.2; the callbacks are the evidence.
         } catch (error: Exception) {
             stop("创建/连接异常：${error.javaClass.simpleName}")
@@ -214,12 +247,21 @@ internal class CxrlSessionProbe(
         photoDeadline = Runnable { stop("request=${request.id} 图片接收/解码超时") }
         handler.postDelayed(photoDeadline!!, PhotoGate.TIMEOUT_MS)
         record("request=${request.id} 用户确认；调用 takePhoto(640,480,80)")
-        try {
-            val result = currentSession.takePhoto(640, 480, 80)
-            if (!result.isSuccess) stop("request=${request.id} 拍照请求失败：${result.code.name}")
-            else record("request=${request.id} 拍照请求被接受；等待有效图片")
-        } catch (error: Exception) {
-            stop("request=${request.id} 拍照异常：${error.javaClass.simpleName}")
+        val attempt = generation
+        sdkExecutor.execute {
+            if (!destroyed && attempt == generation) {
+                try {
+                    val result = currentSession.takePhoto(640, 480, 80)
+                    handler.post {
+                        if (destroyed || attempt != generation || photos.current?.id != request.id) return@post
+                        if (!result.isSuccess) stop("request=${request.id} 拍照请求失败：${result.code.name}")
+                        else record("request=${request.id} 拍照请求被接受；等待有效图片")
+                    }
+                } catch (error: Exception) {
+                    handler.post { if (!destroyed && attempt == generation)
+                        stop("request=${request.id} 拍照异常：${error.javaClass.simpleName}") }
+                }
+            }
         }
     }
 
@@ -262,12 +304,27 @@ internal class CxrlSessionProbe(
             val result = MockObservation.create(request, photo.metadata)
             record("request=${request.id} Mock 完成：${result.getString("summary")}")
             displayRequest = request.id
-            val update = currentSession.customViewUpdate(MockObservation.viewUpdate(result.getString("summary")))
-            if (!update.isSuccess) {
-                stop("request=${request.id} 显示请求失败：${update.code.name}")
-                return
+            val attempt = generation
+            val json = MockObservation.viewUpdate(result.getString("summary"))
+            photoDeadline = Runnable { stop("request=${request.id} SDK 显示请求超时") }
+            handler.postDelayed(photoDeadline!!, 20_000L)
+            sdkExecutor.execute {
+                if (!destroyed && attempt == generation) {
+                    try {
+                        val update = currentSession.customViewUpdate(json)
+                        handler.post {
+                            if (destroyed || attempt != generation || photos.current !== request) return@post
+                            if (!update.isSuccess) { stop("request=${request.id} 显示请求失败：${update.code.name}"); return@post }
+                            clearPhotoDeadline()
+                            displayAccepted = true
+                            record("request=${request.id} SDK 显示更新被接受；眼镜实际可见仍待人工核对")
+                        }
+                    } catch (error: Exception) {
+                        handler.post { if (!destroyed && attempt == generation)
+                            stop("request=${request.id} 显示异常：${error.javaClass.simpleName}") }
+                    }
+                }
             }
-            record("request=${request.id} SDK 显示更新被接受；眼镜实际可见仍待人工核对")
         } catch (error: Exception) {
             stop("request=${request.id} Mock/显示异常：${error.javaClass.simpleName}")
         }
@@ -275,7 +332,7 @@ internal class CxrlSessionProbe(
 
     fun confirmVisible() {
         val request = photos.current
-        if (request == null || request.id != displayRequest || !started || visibleConfirmed) {
+        if (request == null || request.id != displayRequest || !started || !displayAccepted || visibleConfirmed) {
             record("没有可确认的本次显示请求")
             return
         }
@@ -297,6 +354,17 @@ internal class CxrlSessionProbe(
         decodedPhoto = null
         displayRequest = null
         visibleConfirmed = false
+        displayAccepted = false
+    }
+
+    fun hostBackground() {
+        // Opening the authorization Activity must remain possible before Session creation.
+        if (session != null) stop("手机宿主后台/灭屏：关闭 Session，返回后需手动重新授权连接")
+    }
+
+    fun manualRecover() {
+        stop("用户手动恢复：清理旧 Session，不恢复旧拍照授权")
+        authorize()
     }
 
     fun refresh() {
@@ -305,10 +373,13 @@ internal class CxrlSessionProbe(
     }
 
     private fun reportBluetooth() {
-        try {
-            record("官方 SDK 眼镜蓝牙状态：${manager.isGlassesBtConnected()}")
-        } catch (error: Exception) {
-            record("官方 SDK 眼镜蓝牙状态未知：${error.javaClass.simpleName}")
+        val attempt = generation
+        sdkExecutor.execute {
+            if (!destroyed && attempt == generation) {
+                val text = try { "官方 SDK 眼镜蓝牙状态：${manager.isGlassesBtConnected()}" }
+                    catch (error: Exception) { "官方 SDK 眼镜蓝牙状态未知：${error.javaClass.simpleName}" }
+                handler.post { if (!destroyed && attempt == generation) record(text) }
+            }
         }
     }
 
@@ -323,18 +394,23 @@ internal class CxrlSessionProbe(
         val oldSession = session
         val oldCallback = lifecycle
         val oldImages = imageCallback
+        val oldEvents = glassesListener
         session = null
         lifecycle = null
         imageCallback = null
+        glassesListener = null
         if (oldSession != null) {
-            try {
-                if (oldCallback != null) oldSession.removeLifecycleCallback(oldCallback)
-                if (oldImages != null) oldSession.removeImageCallback(oldImages)
-            } catch (error: Exception) {
-                record("移除回调异常：${error.javaClass.simpleName}")
-            }
-            try { oldSession.close() } catch (error: Exception) {
-                record("Session 释放异常：${error.javaClass.simpleName}")
+            sdkExecutor.execute {
+                for (remove in listOf<() -> Unit>(
+                    { if (oldCallback != null) oldSession.removeLifecycleCallback(oldCallback) },
+                    { if (oldImages != null) oldSession.removeImageCallback(oldImages) },
+                    { if (oldEvents != null) oldSession.removeGlassesEventListener(oldEvents) },
+                    { oldSession.close() },
+                )) {
+                    try { remove() } catch (error: Exception) {
+                        handler.post { if (!destroyed) record("SDK 清理异常：${error.javaClass.simpleName}") }
+                    }
+                }
             }
         }
         record(reason)
@@ -342,9 +418,10 @@ internal class CxrlSessionProbe(
 
     fun destroy() {
         destroyed = true
-        stop("Activity 退出，已执行 Session 清理")
+        stop("Activity 退出，本地请求已作废，SDK 清理已排队")
         handler.removeCallbacksAndMessages(null)
         decoder.shutdownNow()
+        sdkExecutor.shutdown() // Let queued SDK close run; do not drop resource cleanup.
     }
 
     private fun armDeadline(reason: String, attempt: Long, delay: Long) {
