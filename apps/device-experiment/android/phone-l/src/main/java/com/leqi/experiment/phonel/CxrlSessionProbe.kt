@@ -196,16 +196,21 @@ internal class CxrlSessionProbe(
                 private fun dispatch(action: () -> Unit) {
                     handler.post { if (!destroyed && attempt == generation && session === created) action() }
                 }
+                private fun stopActive(reason: String) {
+                    // SDK events also fire in Idle; the old launcher is expected before scene start.
+                    if (photoSessionInitialized) stop(reason)
+                    else record("$reason；Session 尚未 Started，仅记录初始状态")
+                }
                 override fun onGlassesAppResumed() = dispatch { record("眼镜应用恢复；未重开采集授权") }
-                override fun onGlassesAppPaused() = dispatch { stop("眼镜应用暂停，关闭本次 Session") }
+                override fun onGlassesAppPaused() = dispatch { stopActive("眼镜应用暂停") }
                 override fun onWearingStatusChanged(wearing: Boolean) = dispatch {
                     record("眼镜佩戴状态：$wearing")
                     if (!wearing) cancelPhoto("摘下眼镜，撤销本次拍照确认")
                 }
                 override fun onDeviceInfoChanged(info: GlassesInfo) = dispatch { record("设备信息更新；不记录设备标识") }
-                override fun onScreenOff() = dispatch { stop("眼镜灭屏，关闭本次 Session") }
+                override fun onScreenOff() = dispatch { stopActive("眼镜灭屏") }
                 override fun onScreenOn() = dispatch { record("眼镜亮屏；未自动授权或采集") }
-                override fun onLauncherResumed() = dispatch { stop("眼镜返回桌面，关闭本次 Session") }
+                override fun onLauncherResumed() = dispatch { stopActive("眼镜返回桌面") }
                 override fun onAiWake() = dispatch { cancelPhoto("官方助手唤醒，撤销本次拍照确认") }
                 override fun onAiInterruptChanged(interruptWake: Boolean) = dispatch {
                     if (interruptWake) cancelPhoto("官方助手中断，撤销本次拍照确认")
