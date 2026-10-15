@@ -5,12 +5,14 @@ on:
     paths:
       - 'apps/device-experiment/android/**'
       - 'apps/phone-companion/android/src/main/java/com/leqi/experiment/phonebt/Gemma*.kt'
+      - 'tools/*cxrl*'
       - '.github/workflows/cxrl-probe.yml'
   push:
     branches: [main]
     paths:
       - 'apps/device-experiment/android/**'
       - 'apps/phone-companion/android/src/main/java/com/leqi/experiment/phonebt/Gemma*.kt'
+      - 'tools/*cxrl*'
       - '.github/workflows/cxrl-probe.yml'
 
 permissions:
@@ -38,4 +40,6 @@ jobs:
       - name: Build, replay SDK callbacks and lint
         # CI checks the actual Gemma code path without downloading 2GB per change.
         # These APKs have no weights and are never uploaded as complete releases.
-        run: gradle -p apps/device-experiment/android -PcxrlProbeOnly=true -PcxrlGemma=true -PgemmaCodeOnly=true -PleqiSourceRevision="$GITHUB_SHA" :phone-l:assembleDebug :phone-l:testDebugUnitTest :phone-l:lintDebug --console=plain
+        run: |
+          python tools/prepare-cxrl-speech.py --runtime-only
+          gradle -p apps/device-experiment/android -PcxrlProbeOnly=true -PcxrlGemma=true -PcxrlSpeech=true -PgemmaCodeOnly=true -PleqiSourceRevision="$GITHUB_SHA" :phone-l:assembleDebug :phone-l:testDebugUnitTest :phone-l:lintDebug --console=plain

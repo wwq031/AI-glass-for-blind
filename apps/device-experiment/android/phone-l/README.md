@@ -154,3 +154,40 @@ CI 使用 `-PcxrlGemma=true -PgemmaCodeOnly=true` 只编译和测试代码，免
 5. 再次拍照仍先回收旧 SDK Session 至 Idle，再授权/连接和确认。连续检查至少三张不同场景。取消、后台、断连及 120 秒推理超时作废当前结果；旧模型调用可能继续至原生返回，期间不排队发起新的推理，返回后丢弃旧输出。原生推理返回前不会并发释放引擎。
 
 导出 `mode=gemma`，阶段为 `inference_start` / `inference_end`，并记录模型 SHA-256、GPU 后端和运行库版本；不记录图片、提示词或原始模型输出。汇总工具将 Mock 与 Gemma、不同模型版本分组，禁止混用 Mock 时间作为模型耗时。软件测试使用模型端口替身验证异步隔离，真实模型推理、GPU 性能和现场识别准确性仍需用户真机验收。
+
+
+## v0.4.0 内置离线语音识别、对话和播报
+
+用户选择 SenseVoiceSmall INT8 → Gemma 4 E2B → MeloTTS zh_en INT8 的手机本地方案。完整 APK 同时内置三套权重，安装后无需导入语音模型。语音输入为手机内置麦克风；输出默认手机扬声器，也可选择跟随 Android 系统媒体路由，通过已经配对的眼镜蓝牙播放。输出路由类型与人工实际听见分别记录，不将普通蓝牙设备自动认定为眼镜。
+
+本版实现前台、明确启动、一问一答：点开始并确认后，最多录制 30 秒的 16kHz/单声道/PCM16；点结束或达到上限后完整收音，再依次执行 ASR、Gemma 文本回答、MeloTTS 和播放。播放时禁止开始新录音，避免将本机播报再次识别。录音、CPU 语音模型、GPU Gemma 和播放各有独立工作队列，界面不会等待原生推理。取消、音频焦点丢失、进入后台、销毁及超时撤销当前代号；晚到结果不识别为新一轮、不播报旧回答。原生任务若已执行，允许结束后丢弃结果，再串行释放资源。
+
+语音对话本身可以使用手机麦克风和扬声器独立运行，不需要 Rokid 官方授权。眼镜图片采集和文字显示仍走官方 App / CXR-L；本版没有宣称与官方 App 完全解耦。真实 1.1.2 接口存在 startAudioStream/addAudioCallback，但缺少回传音频格式元数据，未将未知格式硬编码送入 ASR；眼镜麦克风与眼镜实体键不在本版已验收范围内。公开 CxrSession 没有发送任意 TTS PCM 的播放方法，蓝牙播报使用 Android 媒体路由。
+
+Gemma 文本与图片共享原有引擎，在同一工作线程串行执行；每次文本生成建立新 Conversation，调用方提供最多四组且按字符预算裁剪的历史。回答必须为单字段 JSON answer，最多 140 字符；不执行拍照、导航或联网操作。询问画面时可以引用最近一次已成功返回的图片描述，明确标作历史图片，不能假装是当前实时画面。拍照仍使用原有明确确认窗口；最近图片结果可通过“朗读最近一次图片识别结果”播报。取消不会伪造识别、回答或静音占位音频。
+
+SenseVoice/Melo 权重、词典、规则和许可共 19 个文件，原始共 313860895 bytes。模型与 Android AAR 的版本、来源、大小、SHA-256 固定在 `tools/cxrl-speech-models.lock.json`。MeloTTS 模型为 MIT；SenseVoice 遵循其所链接的 FunASR 模型许可，随包保留原许可引用、模型名称、来源、作者及协议全文。完整构建逐文件校验；首次运行流式校验并原子写入应用私有目录，缺失、损坏、空间不足时拒绝初始化。语音版本对 APK assets 启用无损 ZIP 压缩，使完整单 APK 保持在 2GiB 以下；解压后权重不改变。
+
+构建：
+
+```powershell
+./tools/download-cxrl-gemma.ps1
+python tools/prepare-cxrl-speech.py
+$revision = git rev-parse HEAD
+gradle -p apps/device-experiment/android -PcxrlProbeOnly=true -PcxrlGemma=true -PcxrlSpeech=true "-PgemmaModelPath=$PWD/artifacts/models/gemma-4-E2B-it-gpu.litertlm" "-PspeechModelRoot=$PWD/artifacts/models/speech" "-PleqiSourceRevision=$revision" '-Dorg.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8' :phone-l:assembleDebug :phone-l:testDebugUnitTest :phone-l:lintDebug
+python tools/verify-cxrl-gemma-apk.py apps/device-experiment/android/phone-l/build/outputs/apk/debug/phone-l-debug.apk
+```
+
+CI 下载固定哈希的 Sherpa Android AAR，以 `-PcxrlSpeech=true -PgemmaCodeOnly=true` 验证真实代码路径，不发布没有权重的 CI APK。可额外在桌面安装 `sherpa-onnx==1.13.8` 和 numpy 后执行 `python tools/test-cxrl-speech-native.py`：测试官方中文 WAV 的真实识别、Melo 的非静音合成及 TTS→ASR 回环。此验证已在 Windows x64 CPU 上运行通过，不能替代 Android 麦克风、GPU 和眼镜蓝牙实测；回环并非逐字无误，例如“离线”被识别为“一线”，仍需实际语音质量验收。
+
+安装与测试：
+
+1. 覆盖安装 v0.4.0（arm64-v8a）；建议安装前预留 10GB 存储。保持应用前台，分别等待 Gemma 和离线语音就绪。
+2. 首先调好媒体音量，点击“测试离线语音播报”，确认手机实际听见，再点“人工确认听见本次播报”。
+3. 点开始说话，允许 Android 麦克风权限后再次点击并确认开始；权限返回不会自动录音。说“你好，请简单介绍一下你自己”，点结束录音并发送，依次核对识别文本、回答和实际播报。
+4. 连续问三轮不同问题，检查每轮只录制/播报一次。再验证取消录音、取消推理、取消播放，以及切后台后没有旧结果复活或自动开始录音。
+5. 按既有授权/连接/确认拍照流程完成图片识别，点击朗读最近一次图片结果。询问最近图片时核对模型回答确实来自该帧，不能将历史描述当作当前安全判断。
+6. 需要眼镜播放时，先在 Android 系统媒体输出选眼镜，再选应用的系统媒体路由模式并测试实际听见；回调类型 Bluetooth 不等于已证明眼镜播放，必须人工确认。
+7. 完成后导出 JSON。语音记录位于 speech 字段，包含请求代号、阶段时间、失败阶段、输出路由和人工听见确认，不包含录音、转写、回答或对话历史。历史只存内存，进入后台/清空/退出时撤销；播放头完成不等于实际听见。
+
+当前不是唤醒词、自动 VAD、持续监听、全双工可打断对话或完整导航系统。实际手机的麦克风、Gemma GPU、语音延迟/准确率、扬声器及眼镜蓝牙需要真机验收；代码、构建、桌面原生测试不替代这些证据。

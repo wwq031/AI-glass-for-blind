@@ -31,6 +31,8 @@ class PhoneLActivity : Activity() {
     private var exportPending = false
     private var glassesFirmware = "unrecorded"
     private val resultName get() = if (BuildConfig.GEMMA_ENABLED) "Gemma" else "Mock"
+    private var dialogue: SpeechDialogue? = null
+    private var localModel: GemmaObservation? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +47,51 @@ class PhoneLActivity : Activity() {
             text = if (BuildConfig.GEMMA_ENABLED) "正在准备内置 Gemma…" else "当前为 Mock 通信版本"
         }
         content.addView(modelStatus)
+        val speechStatus = TextView(this).apply { textSize = 16f }
+        if (BuildConfig.SPEECH_ENABLED) content.addView(speechStatus)
+        var observation: GemmaObservation? = null
+        if (BuildConfig.GEMMA_ENABLED) observation = GemmaObservation(this) { modelStatus.text = it }
+        localModel = observation
+        if (BuildConfig.SPEECH_ENABLED && observation != null) {
+            val speaker = PhoneSpeechSpeaker(this) { dialogue?.cancel("音频焦点丢失，已停止播报") }
+            dialogue = SpeechDialogue(PhoneSpeechRecorder(this), speaker, observation, { cancelled ->
+                val root = SpeechAssets.prepare(applicationContext, cancelled)
+                SherpaSpeechEngines(root).also { it.initialize() }
+            }, { view -> speechStatus.text = "语音：${view.status}\n识别：${view.transcript}\n回答：${view.answer}" })
+            fun voiceAction(label: String, run: () -> Unit) {
+                content.addView(Button(this).apply { text = label; setOnClickListener { run() } })
+            }
+            voiceAction("开始说话（手机麦克风，最长30秒）") {
+                if (::probe.isInitialized && probe.photoInProgress()) {
+                    speechStatus.text = "请先完成或取消当前图片请求"
+                } else if (checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                    requestPermissions(arrayOf(Manifest.permission.RECORD_AUDIO), 2002)
+                    speechStatus.text = "请允许麦克风权限后再次点击开始；授权不会自动录音"
+                } else AlertDialog.Builder(this).setTitle("开始本次手机录音")
+                    .setMessage("使用手机麦克风，最长30秒。点击结束或到达时限后，在本机识别、交给Gemma回答并播报；不会自动拍照。")
+                    .setPositiveButton("开始录音") { _, _ -> dialogue?.startRecording() }
+                    .setNegativeButton("取消", null).show()
+            }
+            voiceAction("结束录音并发送给 Gemma") { dialogue?.stopRecordingAndSend() }
+            voiceAction("取消录音 / 推理 / 播报") { dialogue?.cancel() }
+            voiceAction("测试离线语音播报") { dialogue?.speak("你好，离线中文语音播报测试。现在是二零二六年。") }
+            voiceAction("朗读最近一次图片识别结果") { dialogue?.speakPhoto() }
+            voiceAction("人工确认听见本次播报") {
+                AlertDialog.Builder(this).setTitle("仅在实际听见后确认")
+                    .setMessage("请确认刚才的回答或测试语音确实从预期设备播放。")
+                    .setPositiveButton("已听见") { _, _ -> dialogue?.confirmHeard() }
+                    .setNegativeButton("未确认", null).show()
+            }
+            voiceAction("输出：手机扬声器") {
+                dialogue?.cancel(); speaker.usePhoneSpeaker = true
+                speechStatus.text = "输出已选手机扬声器；点击测试播报或开始新一轮对话"
+            }
+            voiceAction("输出：系统媒体路由（可选眼镜蓝牙）") {
+                dialogue?.cancel(); speaker.usePhoneSpeaker = false
+                speechStatus.text = "输出跟随系统媒体路由。请在系统媒体输出中选择眼镜，再测试是否实际听见；不会自动改为眼镜麦克风"
+            }
+            voiceAction("清空对话历史") { dialogue?.clearHistory() }
+        }
         content.addView(Button(this).apply {
             text = "重新检查官方 App"
             setOnClickListener { checkEnvironment() }
@@ -53,10 +100,10 @@ class PhoneLActivity : Activity() {
             text = "打开官方 App 核对连接与拍照"
             setOnClickListener { openCompanion() }
         })
-        fun action(label: String, run: () -> Unit) {
+        fun action(label: String, requiresProbe: Boolean = true, run: () -> Unit) {
             content.addView(Button(this).apply {
                 text = label
-                setOnClickListener { if (::probe.isInitialized) run() }
+                setOnClickListener { if (!requiresProbe || ::probe.isInitialized) run() }
             })
         }
         action("请求官方授权（不拍照）") { withBluetoothPermission { probe.authorize() } }
@@ -72,7 +119,7 @@ class PhoneLActivity : Activity() {
                 .setPositiveButton("保存") { _, _ -> glassesFirmware = value.text.toString().trim().take(120) }
                 .setNegativeButton("取消", null).show()
         }
-        action("导出脱敏验收记录 JSON") {
+        action("导出脱敏验收记录 JSON", requiresProbe = false) {
             exportPending = true
             startActivityForResult(Intent(Intent.ACTION_CREATE_DOCUMENT).apply {
                 addCategory(Intent.CATEGORY_OPENABLE)
@@ -81,6 +128,10 @@ class PhoneLActivity : Activity() {
             }, 3001)
         }
         action("拍照：打开本次确认窗口") {
+            if (dialogue?.active == true) {
+                speechStatus.text = "请先结束或取消当前录音、对话或播报"
+                return@action
+            }
             probe.preparePhoto { request -> AlertDialog.Builder(this)
                 .setTitle("确认本次眼镜拍照")
                 .setMessage("仅拍摄一张照片，在手机内存中预览；有效图片到达后在本机生成 $resultName 结果并显示到眼镜。请求：${request.id}")
@@ -104,12 +155,12 @@ class PhoneLActivity : Activity() {
         setContentView(ScrollView(this).apply { addView(content) })
         try {
             manager = CxrSessionManager.getInstance(applicationContext)
-            val observation = if (BuildConfig.GEMMA_ENABLED) GemmaObservation(this) { modelStatus.text = it } else null
             probe = CxrlSessionProbe(this, manager, { line ->
                 if (lines.size == 100) lines.removeFirst()
                 lines.addLast(line)
                 trace.text = lines.joinToString("\n")
-            }, { photo -> image.setImageBitmap(photo?.bitmap) }, versions = { recordVersions() }, observation = observation)
+            }, { photo -> image.setImageBitmap(photo?.bitmap) }, versions = { recordVersions() }, observation = observation,
+                onDescription = { description -> dialogue?.setPhotoDescription(description) })
             checkEnvironment()
         } catch (error: Exception) {
             // Exception messages may contain SDK credentials or device identifiers.
@@ -163,8 +214,11 @@ class PhoneLActivity : Activity() {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode == 3001) {
             val uri = data?.data
-            if (exportPending && resultCode == RESULT_OK && uri != null && ::probe.isInitialized) {
-                val snapshot = probe.exportRecords()
+            if (exportPending && resultCode == RESULT_OK && uri != null) {
+                val snapshot = if (::probe.isInitialized) probe.exportRecords() else JSONObject()
+                    .put("schema_version", "1.0").put("route", "CXR-L").put("mode", "gemma")
+                    .put("clock", "phone_elapsed_realtime_ms").put("runs", org.json.JSONArray())
+                dialogue?.let { snapshot.put("speech", it.export()) }
                 val firmware = glassesFirmware
                 exporter.execute {
                     try {
@@ -214,12 +268,15 @@ class PhoneLActivity : Activity() {
     }
 
     override fun onDestroy() {
+        dialogue?.close()
         if (::probe.isInitialized) probe.destroy()
+        localModel?.close()
         exporter.shutdown()
         super.onDestroy()
     }
 
     override fun onStop() {
+        dialogue?.clearHistory()
         if (::probe.isInitialized) probe.hostBackground()
         super.onStop()
     }
