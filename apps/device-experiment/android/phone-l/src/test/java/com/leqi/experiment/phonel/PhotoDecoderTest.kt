@@ -43,4 +43,17 @@ class PhotoDecoderTest {
             assertNull(PhotoDecoder.decode(data.copyOf(data.size - 2)))
         }
     }
+    @Test fun modelReceivesRealJpegWhileOriginalWebpMetadataIsPreserved() {
+        val webp = encoded(Bitmap.CompressFormat.WEBP_LOSSLESS)
+        val photo = PhotoDecoder.decode(webp, forModel = true)!!
+        assertEquals("image/webp", photo.metadata.mime)
+        assertEquals(webp.size, photo.metadata.bytes)
+        assertEquals(0xff.toByte(), photo.modelJpeg!![0])
+        assertEquals(0xd8.toByte(), photo.modelJpeg[1])
+        val modelPhoto = PhotoDecoder.decode(photo.modelJpeg)!!
+        assertEquals("image/jpeg", modelPhoto.metadata.mime)
+        assertEquals(photo.bitmap.width, modelPhoto.bitmap.width)
+        assertEquals(photo.bitmap.height, modelPhoto.bitmap.height)
+        photo.bitmap.recycle(); modelPhoto.bitmap.recycle()
+    }
 }

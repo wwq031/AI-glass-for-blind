@@ -124,3 +124,33 @@ node tools/summarize-cxrl-mvp.mjs <记录.json> > <报告.md>
 确认窗口取消不占用新 Session 的拍照机会；已经调用过相机的 Session 永不复用。当前拍照/解码/显示尚未结束时拒绝开始下一次，用户仍可主动取消。回收期间取消或手机进入后台会撤销待弹窗的请求；旧图片、旧确认和旧生命周期回调不能进入新请求。确实跳转官方授权 Activity 时保留本次准备，以便用户授权后继续连接，仍须重新确认拍照。
 
 回归测试覆盖缓存授权、实际 Activity 请求码、旧授权拒收、连续两次真实解码输入对应不同请求、异步回收未 Idle 时不授权/创建、取消和后台撤销、回收失败/超时、重复点击和旧图片隔离。测试使用 SDK 接口替身和 Robolectric，不替代实际固件上的连续拍照验证。
+
+
+## v0.3.0 内置 Gemma 视觉识别
+
+用户选择将完整模型权重随 APK 提供，首次安装后不导入、不下载。`-PcxrlGemma=true` 构建启用真实 Gemma 图片推理；默认构建继续是 Mock 调试，运行时不自动从 Gemma 失败回退到 Mock。
+
+模型固定为官方 LiteRT 社区的 `gemma-4-E2B-it-gpu.litertlm`，版本 `b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1`，2008432640 bytes，SHA-256 `a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5`。GPU 权重不是此前约 2.59GB 的 CPU/GPU 通用文件；本版使用 GPU 文本与视觉后端，固定 LiteRT-LM 0.17.1。复用原有 GemmaLocalBridge，通过独立 library 只编译模型桥接和输出解析，不引入旧 Bluetooth/Agent/TTS 宿主。旧宿主的默认 CPU 配置保留。
+
+下载与完整构建（需完整 JDK、SDK 36.1 / build-tools 35.0.0）：
+
+```powershell
+./tools/download-cxrl-gemma.ps1
+$revision = git rev-parse HEAD
+# 使用已安装的 gradle 9.2.0 或对应完整路径
+gradle -p apps/device-experiment/android -PcxrlProbeOnly=true -PcxrlGemma=true "-PgemmaModelPath=$PWD/artifacts/models/gemma-4-E2B-it-gpu.litertlm" "-PleqiSourceRevision=$revision" '-Dorg.gradle.jvmargs=-Xmx4096m -Dfile.encoding=UTF-8' :phone-l:assembleDebug :phone-l:testDebugUnitTest :phone-l:lintDebug
+```
+
+下载脚本先访问原站，网络不可达时使用镜像；固定 revision、大小和原站 SHA-256 校验。权重不进入 Git。完整构建先校验模型，再分成有界、不压缩的 APK assets；首次运行在工作线程流式复制到本应用私有目录，校验完整 SHA-256 后原子提交。再次启动校验已有文件后复用。缺少、截断、错误权重、空间不足不会产生“模型已就绪”。APK 含 Apache 2.0 文本与模型来源 NOTICE。
+
+CI 使用 `-PcxrlGemma=true -PgemmaCodeOnly=true` 只编译和测试代码，免去每次下载 2GB；这种 APK 不含权重，不能作为完整版本发布。完整构建缺少模型路径或校验不符时直接失败，发布前还必须从 APK 各分片重新计算模型 SHA-256。
+
+安装与真机检查：
+
+1. 覆盖安装 v0.3.0（arm64-v8a）。首次解包、模型和 GPU 缓存需要额外空间，建议安装前至少预留 8GB。保持应用前台，等待“Gemma 已就绪”。GPU 驱动兼容性仍需在实际手机验证；初始化失败会显示失败，不能以编译成功替代推理成功。
+2. 授权并连接眼镜，Started 后点拍照并明确确认。原始 WebP/JPEG 先按现有边界校验、解码，工作线程将同一帧转为 JPEG 交给 Gemma；记录保留原始 MIME/尺寸和字节数。
+3. 图片只留在本机内存，当前模型端口不上传图片。每次调用建立并关闭新的模型 Conversation，避免上一张图污染下一张。输出仅接受有界、单字段 JSON summary；无内容、异常格式和模型错误不会伪装成成功。
+4. 眼镜应显示 `Gemma：<实际画面描述> #<本次代号>`。核对内容与现场，再点人工确认。此版本完成的是图片识别接入，没有新增语音、TTS 或完整导航流程。
+5. 再次拍照仍先回收旧 SDK Session 至 Idle，再授权/连接和确认。连续检查至少三张不同场景。取消、后台、断连及 120 秒推理超时作废当前结果；旧模型调用可能继续至原生返回，期间不排队发起新的推理，返回后丢弃旧输出。原生推理返回前不会并发释放引擎。
+
+导出 `mode=gemma`，阶段为 `inference_start` / `inference_end`，并记录模型 SHA-256、GPU 后端和运行库版本；不记录图片、提示词或原始模型输出。汇总工具将 Mock 与 Gemma、不同模型版本分组，禁止混用 Mock 时间作为模型耗时。软件测试使用模型端口替身验证异步隔离，真实模型推理、GPU 性能和现场识别准确性仍需用户真机验收。

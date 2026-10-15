@@ -33,6 +33,7 @@ class GemmaLocalBridge @JvmOverloads constructor(
     private val modelFile: File,
     private val cacheDir: File,
     private val cpuThreads: Int = defaultCpuThreads(),
+    private val gpu: Boolean = false,
 ) : AutoCloseable {
 
     /** 使用应用私有目录里的模型文件；找不到时在 [initialize] 阶段明确报错。 */
@@ -66,9 +67,9 @@ class GemmaLocalBridge @JvmOverloads constructor(
             }
             val config = EngineConfig(
                 modelPath = modelFile.absolutePath,
-                backend = Backend.CPU(cpuThreads),
-                visionBackend = Backend.CPU(cpuThreads),
-                audioBackend = Backend.CPU(cpuThreads),
+                backend = if (gpu) Backend.GPU() else Backend.CPU(cpuThreads),
+                visionBackend = if (gpu) Backend.GPU() else Backend.CPU(cpuThreads),
+                audioBackend = if (gpu) null else Backend.CPU(cpuThreads),
                 maxNumTokens = MAX_CONTEXT_TOKENS,
                 maxNumImages = 1,
                 cacheDir = cacheDir.absolutePath,

@@ -1,0 +1,13 @@
+This APK can include the unmodified Google Gemma 4 E2B GPU model.
+Model: litert-community/gemma-4-E2B-it-litert-lm / gemma-4-E2B-it-gpu.litertlm
+Repository revision: b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1
+Source: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm
+SHA-256: a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5
+The source model card declares Apache License 2.0. See Apache-2.0.txt.
+
+LiteRT-LM 0.17.1, Copyright The LiteRT-LM Authors, Apache License 2.0.
+https://github.com/google-ai-edge/LiteRT-LM/tree/v0.17.1
+
+Weights are divided into APK assets for transport and restored byte-for-byte
+with SHA-256 verification in application-private storage. No model fine-tuning
+or weight modification is performed by this application.
