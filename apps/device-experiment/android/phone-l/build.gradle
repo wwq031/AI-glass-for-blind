@@ -3,6 +3,9 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
+def gemmaEnabled = providers.gradleProperty('cxrlGemma').map { it.toBoolean() }.getOrElse(false)
+def gemmaCodeOnly = providers.gradleProperty('gemmaCodeOnly').map { it.toBoolean() }.getOrElse(false)
+
 android {
     namespace 'com.leqi.experiment.phonel'
     compileSdk { version = release(36) { it.minorApiLevel = 1 } }
@@ -10,8 +13,10 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode 3
-        versionName '0.2.1'
+        versionCode gemmaEnabled ? 4 : 3
+        versionName gemmaEnabled ? '0.3.0' : '0.2.1'
+        buildConfigField 'boolean', 'GEMMA_ENABLED', gemmaEnabled.toString()
+        ndk { abiFilters 'arm64-v8a' }
         def sourceRevision = providers.gradleProperty('leqiSourceRevision').getOrElse('unknown')
         if (!(sourceRevision ==~ /[0-9a-f]{7,40}|unknown/)) throw new GradleException('Invalid leqiSourceRevision')
         buildConfigField 'String', 'SOURCE_REVISION', '"' + sourceRevision + '"'
@@ -21,6 +26,7 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures { buildConfig = true }
+    androidResources { noCompress += ['modelpart'] }
 }
 
 kotlin {
@@ -32,6 +38,55 @@ kotlin {
 // Explicit migration to the API verified in the official CXR-L 1.1.2 Sample.
 dependencies {
     implementation 'com.rokid.cxr:client-l:1.1.2'
+    implementation project(':gemma-runtime')
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.16'
 }
+
+// Large weights stay out of Git. Split assets keep individual ZIP entries bounded.
+def generatedModelAssets = layout.buildDirectory.dir('generated/gemmaAssets')
+tasks.register('prepareGemmaAssets') {
+    def modelPath = providers.gradleProperty('gemmaModelPath')
+    inputs.property('enabled', gemmaEnabled)
+    inputs.property('codeOnly', gemmaCodeOnly)
+    if (gemmaEnabled && !gemmaCodeOnly && modelPath.isPresent()) inputs.file(modelPath)
+    outputs.dir(generatedModelAssets)
+    doLast {
+        def target = generatedModelAssets.get().asFile
+        delete target
+        target.mkdirs()
+        if (!gemmaEnabled || gemmaCodeOnly) return
+        if (!modelPath.isPresent()) throw new GradleException('Full Gemma APK requires -PgemmaModelPath=<verified GPU .litertlm>; use -PgemmaCodeOnly=true only for CI.')
+        def source = file(modelPath.get())
+        def expected = 'a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5'
+        if (source.length() != 2008432640L) throw new GradleException('Unexpected Gemma GPU model size')
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        def parts = []
+        def root = new File(target, 'gemma'); root.mkdirs()
+        source.withInputStream { input ->
+            byte[] buffer = new byte[1024 * 1024]
+            long remaining = source.length()
+            int index = 0
+            while (remaining > 0) {
+                def name = String.format('weights-%03d.modelpart', index++)
+                long partSize = Math.min(256L * 1024 * 1024, remaining)
+                new File(root, name).withOutputStream { output ->
+                    long written = 0
+                    while (written < partSize) {
+                        int read = input.read(buffer, 0, (int)Math.min(buffer.length, partSize - written))
+                        if (read < 0) throw new GradleException('Truncated Gemma model')
+                        output.write(buffer, 0, read); digest.update(buffer, 0, read); written += read
+                    }
+                }
+                parts.add([name: name, bytes: partSize]); remaining -= partSize
+            }
+        }
+        def actual = digest.digest().encodeHex().toString()
+        if (actual != expected) { delete root; throw new GradleException('Gemma model SHA-256 mismatch') }
+        new File(root, 'manifest.json').text = groovy.json.JsonOutput.toJson([
+            model: 'gemma-4-E2B-it-gpu.litertlm', bytes: source.length(), sha256: expected,
+            revision: 'b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1', parts: parts])
+    }
+}
+android.sourceSets.main.assets.srcDir(generatedModelAssets)
+tasks.named('preBuild').configure { dependsOn 'prepareGemmaAssets' }

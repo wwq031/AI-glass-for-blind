@@ -43,7 +43,22 @@ class CxrlSessionProbeTest {
         override fun execute(command: Runnable) { check(!stopped); work.addLast(command) }
         fun drain() { while (work.isNotEmpty()) work.removeFirst().run() }
     }
-    private class Fixture(sdkExecutor: ExecutorService = DirectExecutor()) {
+    private class FakeObservation : PhotoObservation {
+        var loaded = true
+        var busy = false
+        var closed = false
+        var calls = 0
+        var jpeg: ByteArray? = null
+        var callback: ((Result<String>) -> Unit)? = null
+        override val ready get() = loaded && !busy && !closed
+        override fun observe(jpeg: ByteArray, result: (Result<String>) -> Unit) {
+            check(ready); busy = true; calls++; this.jpeg = jpeg; callback = result
+        }
+        fun finish(result: Result<String>) { busy = false; callback!!.invoke(result) }
+        override fun cancel() { }
+        override fun close() { closed = true }
+    }
+    private class Fixture(sdkExecutor: ExecutorService = DirectExecutor(), observation: PhotoObservation? = null) {
         val activity = Robolectric.buildActivity(Activity::class.java).setup().get()
         val lines = mutableListOf<String>()
         val updates = mutableListOf<String>()
@@ -103,7 +118,7 @@ class CxrlSessionProbeTest {
                 else -> error("Unexpected manager call: ${method.name}")
             }
         } as CxrSessionManager
-        val probe: CxrlSessionProbe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor)
+        val probe: CxrlSessionProbe = CxrlSessionProbe(activity, manager, { lines.add(it) }, { }, DirectExecutor(), sdkExecutor, observation = observation)
         fun connect() {
             probe.authorize()
             idle()
@@ -411,6 +426,79 @@ class CxrlSessionProbeTest {
         fixture.probe.preparePhoto { replacement = it }
         assertNotNull(replacement)
         assertEquals(2, fixture.creates) // Cancelled unconfirmed request can use this fresh scene.
+        fixture.probe.destroy()
+    }
+    @Test fun gemmaUsesDecodedImageAndExportsInferenceWithoutMockTimings() {
+        val model = FakeObservation()
+        val fixture = Fixture(observation = model)
+        fixture.connect(); val id = fixture.capture(); fixture.deliver(jpeg())
+        assertEquals(1, model.calls)
+        assertTrue(PhotoDecoder.completeContainer(model.jpeg!!))
+        assertTrue(fixture.updates.isEmpty())
+        model.finish(Result.success("桌上有杯子")); idle()
+        assertEquals(1, fixture.updates.size)
+        assertTrue(fixture.updates.single().contains("Gemma：桌上有杯子 #${id.take(8)}"))
+        assertTrue(fixture.lines.none { it.contains("Mock 开始") })
+        fixture.probe.confirmVisible()
+        val records = fixture.probe.exportRecords()
+        assertEquals("gemma", records.getString("mode"))
+        val run = records.getJSONArray("runs").getJSONObject(0)
+        assertEquals("human_confirmed", run.getString("outcome"))
+        assertTrue(run.getJSONObject("timestamps_ms").has("inference_start"))
+        assertFalse(run.getJSONObject("timestamps_ms").has("mock_start"))
+        fixture.probe.destroy(); assertTrue(model.closed)
+    }
+    @Test fun lateGemmaResultAfterBackgroundIsNotDisplayedOrReused() {
+        val model = FakeObservation()
+        val fixture = Fixture(observation = model)
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        fixture.probe.hostBackground()
+        model.finish(Result.success("过期画面")); idle()
+        assertTrue(fixture.updates.isEmpty())
+        assertEquals(1, fixture.closes)
+        fixture.probe.destroy()
+    }
+    @Test fun modelNotReadyNeverArmsCameraOrFallsBackToMock() {
+        val model = FakeObservation(); model.loaded = false
+        val fixture = Fixture(observation = model)
+        fixture.connect()
+        fixture.probe.preparePhoto { error("No model, no capture confirmation") }
+        assertEquals(0, fixture.captures)
+        assertEquals(0, model.calls)
+        assertTrue(fixture.updates.isEmpty())
+        fixture.probe.destroy()
+    }
+    @Test fun gemmaFailureAndTimeoutAreInferenceFailuresWithoutMockSuccess() {
+        for (timeout in listOf(false, true)) {
+            val model = FakeObservation()
+            val fixture = Fixture(observation = model)
+            fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+            if (timeout) shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(121))
+            else model.finish(Result.failure(IllegalStateException("secret detail not logged")))
+            idle()
+            assertTrue(fixture.updates.isEmpty())
+            val run = fixture.probe.exportRecords().getJSONArray("runs").getJSONObject(0)
+            assertEquals("failed", run.getString("outcome"))
+            assertEquals("inference", run.getString("failure_stage"))
+            assertTrue(fixture.lines.none { it.contains("secret detail") || it.contains("Mock 完成") })
+            fixture.probe.destroy()
+        }
+    }
+    @Test fun consecutiveGemmaRoundsRecycleSdkAndNeverReusePreviousImageOrReply() {
+        val model = FakeObservation()
+        val fixture = Fixture(observation = model)
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        val oldReply = model.callback!!
+        model.finish(Result.success("第一张")); idle()
+        var second: PhotoGate.Request? = null
+        fixture.probe.preparePhoto { second = it }; idle()
+        fixture.probe.confirmPhoto(second!!.id); fixture.deliver(jpeg())
+        oldReply(Result.success("旧画面迟到")); idle()
+        assertEquals(1, fixture.updates.size)
+        model.finish(Result.success("第二张")); idle()
+        assertEquals(2, fixture.updates.size)
+        assertTrue(fixture.updates.last().contains("第二张 #${second!!.id.take(8)}"))
+        assertEquals(2, model.calls)
         fixture.probe.destroy()
     }
 }

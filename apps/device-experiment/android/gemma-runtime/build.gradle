@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.library'
+    id 'org.jetbrains.kotlin.android'
+}
+
+android {
+    namespace 'com.leqi.experiment.gemma'
+    compileSdk { version = release(36) { it.minorApiLevel = 1 } }
+    defaultConfig { minSdk 31 }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    // A generated source set shares only the model port, not the full device host.
+    sourceSets.main.java.srcDir(layout.buildDirectory.dir('generated/modelPort'))
+}
+kotlin { compilerOptions { jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17 } }
+dependencies { implementation 'com.google.ai.edge.litertlm:litertlm-android:0.17.1' }
+
+tasks.register('syncModelPort', Sync) {
+    from('../../../phone-companion/android/src/main/java') {
+        include 'com/leqi/experiment/phonebt/GemmaLocalBridge.kt'
+        include 'com/leqi/experiment/phonebt/GemmaOutput.kt'
+    }
+    into layout.buildDirectory.dir('generated/modelPort')
+}
+tasks.named('preBuild').configure { dependsOn 'syncModelPort' }

@@ -4,7 +4,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Phone monotonic stage records only; no image, token, SDK error text or device IDs. */
-internal class MvpRunLog {
+internal class MvpRunLog(private val mode: String = "mock") {
+    init { require(mode in setOf("mock", "gemma")) }
+    private val stages = if (mode == "mock") STAGES else STAGES.map {
+        when (it) { "mock_start" -> "inference_start"; "mock_end" -> "inference_end"; else -> it }
+    }
     private val runs = ArrayDeque<JSONObject>()
     private var active: JSONObject? = null
     fun start(request: PhotoGate.Request, startKind: String, versions: JSONObject = JSONObject()) {
@@ -19,12 +23,12 @@ internal class MvpRunLog {
     }
     fun mark(id: String, stage: String, time: Long): Boolean {
         val run = active ?: return false
-        if (run.getString("request_id") != id || stage !in STAGES || time < 0 ||
+        if (run.getString("request_id") != id || stage !in stages || time < 0 ||
             run.getString("outcome") !in setOf("pending", "display_sent")) return false
         val stamps = run.getJSONObject("timestamps_ms")
         if (stamps.has(stage)) return false
-        val index = STAGES.indexOf(stage)
-        if (index == 0 || !stamps.has(STAGES[index - 1]) || time < stamps.getLong(STAGES[index - 1])) return false
+        val index = stages.indexOf(stage)
+        if (index == 0 || !stamps.has(stages[index - 1]) || time < stamps.getLong(stages[index - 1])) return false
         stamps.put(stage, time)
         if (stage == "display_call_end") run.put("outcome", "display_sent")
         if (stage == "human_visible") run.put("outcome", "human_confirmed")
@@ -36,7 +40,7 @@ internal class MvpRunLog {
             .put("bytes", photo.bytes).put("width", photo.width).put("height", photo.height).put("mime", photo.mime))
     }
     fun finish(stage: String) {
-        require(stage in setOf("consent", "capture", "decode", "mock", "display", "visibility", "lifecycle"))
+        require(stage in setOf("consent", "capture", "decode", "mock", "inference", "display", "visibility", "lifecycle"))
         val run = active
         if (run != null && run.getString("outcome") != "human_confirmed") {
             run.put("outcome", "failed").put("failure_stage", stage)
@@ -44,7 +48,7 @@ internal class MvpRunLog {
         active = null
     }
     fun export(): JSONObject = JSONObject().put("schema_version", "1.0").put("route", "CXR-L")
-        .put("mode", "mock").put("clock", "phone_elapsed_realtime_ms")
+        .put("mode", mode).put("clock", "phone_elapsed_realtime_ms")
         .put("evidence_level", "unverified")
         .put("runs", JSONArray().also { array -> runs.forEach { array.put(JSONObject(it.toString())) } })
 

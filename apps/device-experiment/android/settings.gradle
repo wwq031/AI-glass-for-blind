@@ -15,6 +15,7 @@ dependencyResolutionManagement {
 }
 rootProject.name = 'LeqiDeviceExperiment'
 include ':phone-l'
+include ':gemma-runtime'
 // The probe can be built without configuring the model/TTS-dependent phone host.
 if (!providers.gradleProperty('cxrlProbeOnly').map { it.toBoolean() }.getOrElse(false)) {
     include ':phone-bt', ':glasses-bt'

@@ -30,6 +30,7 @@ class PhoneLActivity : Activity() {
     private val exporter = Executors.newSingleThreadExecutor()
     private var exportPending = false
     private var glassesFirmware = "unrecorded"
+    private val resultName get() = if (BuildConfig.GEMMA_ENABLED) "Gemma" else "Mock"
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -39,6 +40,11 @@ class PhoneLActivity : Activity() {
         }
         status = TextView(this).apply { textSize = 18f }
         content.addView(status)
+        val modelStatus = TextView(this).apply {
+            textSize = 16f
+            text = if (BuildConfig.GEMMA_ENABLED) "正在准备内置 Gemma…" else "当前为 Mock 通信版本"
+        }
+        content.addView(modelStatus)
         content.addView(Button(this).apply {
             text = "重新检查官方 App"
             setOnClickListener { checkEnvironment() }
@@ -77,7 +83,7 @@ class PhoneLActivity : Activity() {
         action("拍照：打开本次确认窗口") {
             probe.preparePhoto { request -> AlertDialog.Builder(this)
                 .setTitle("确认本次眼镜拍照")
-                .setMessage("仅拍摄一张照片，在手机内存中预览；有效图片到达后自动发送明确标记的 Mock 文本到眼镜。请求：${request.id}")
+                .setMessage("仅拍摄一张照片，在手机内存中预览；有效图片到达后在本机生成 $resultName 结果并显示到眼镜。请求：${request.id}")
                 .setPositiveButton("确认拍照") { _, _ -> probe.confirmPhoto(request.id) }
                 .setNegativeButton("取消") { _, _ -> probe.cancelPhoto() }
                 .setOnCancelListener { probe.cancelPhoto() }
@@ -85,9 +91,9 @@ class PhoneLActivity : Activity() {
             }
         }
         action("取消本次图片接收") { probe.cancelPhoto() }
-        action("人工确认眼镜看见本次 Mock 文本") {
+        action("人工确认眼镜看见本次 $resultName 文本") {
             AlertDialog.Builder(this).setTitle("仅在现场实际看见后确认")
-                .setMessage("请核对眼镜 Mock 文本中的请求代号与下方手机记录一致。发送成功或手机预览不能替代此项。")
+                .setMessage("请核对眼镜 $resultName 文本中的请求代号与下方手机记录一致。发送成功或手机预览不能替代此项。")
                 .setPositiveButton("已看见对应文本") { _, _ -> probe.confirmVisible() }
                 .setNegativeButton("未确认", null).show()
         }
@@ -98,11 +104,12 @@ class PhoneLActivity : Activity() {
         setContentView(ScrollView(this).apply { addView(content) })
         try {
             manager = CxrSessionManager.getInstance(applicationContext)
+            val observation = if (BuildConfig.GEMMA_ENABLED) GemmaObservation(this) { modelStatus.text = it } else null
             probe = CxrlSessionProbe(this, manager, { line ->
                 if (lines.size == 100) lines.removeFirst()
                 lines.addLast(line)
                 trace.text = lines.joinToString("\n")
-            }, { photo -> image.setImageBitmap(photo?.bitmap) }, versions = { recordVersions() })
+            }, { photo -> image.setImageBitmap(photo?.bitmap) }, versions = { recordVersions() }, observation = observation)
             checkEnvironment()
         } catch (error: Exception) {
             // Exception messages may contain SDK credentials or device identifiers.
@@ -121,7 +128,7 @@ class PhoneLActivity : Activity() {
             val installed = manager.isRokidAppInstalled(applicationContext)
             val compatibility = manager.checkRokidAppCompatibility(applicationContext)
             val compatible = compatibility is RokidAppStatus.Compatible
-            status.text = "CXR-L 1.1.2 独立 Mock 通信调试\n" +
+            status.text = "CXR-L 1.1.2 · $resultName ${BuildConfig.VERSION_NAME}\n" +
                 "官方 App 安装：$installed\n版本兼容：$compatible\n" +
                 "Session 阶段见下方脱敏记录；拍照、显示：未验收\n" +
                 "请先在官方 App 完成真实连接与拍照检查。"
@@ -187,8 +194,13 @@ class PhoneLActivity : Activity() {
     private fun recordVersions(firmware: String = glassesFirmware): JSONObject {
         val metadata = JSONObject().put("app_version", BuildConfig.VERSION_NAME)
             .put("source_revision", BuildConfig.SOURCE_REVISION).put("sdk_version", "1.1.2")
+            .put("mode", if (BuildConfig.GEMMA_ENABLED) "gemma" else "mock")
             .put("phone_model", Build.MODEL).put("phone_api", Build.VERSION.SDK_INT)
             .put("glasses_firmware", firmware)
+        if (BuildConfig.GEMMA_ENABLED) metadata
+            .put("model", "gemma-4-E2B-it-gpu.litertlm").put("model_backend", "gpu")
+            .put("model_sha256", "a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5")
+            .put("inference_runtime", "litertlm-android:0.17.1")
         for (name in listOf("com.rokid.sprite.aiapp", "com.rokid.sprite.global.aiapp", "com.rokid.uxr")) {
             try {
                 @Suppress("DEPRECATION")

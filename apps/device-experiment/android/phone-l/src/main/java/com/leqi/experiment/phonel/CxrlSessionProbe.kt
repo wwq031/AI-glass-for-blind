@@ -37,6 +37,7 @@ internal class CxrlSessionProbe(
     private val decoder: ExecutorService = Executors.newSingleThreadExecutor(),
     private val sdkExecutor: ExecutorService = Executors.newSingleThreadExecutor(),
     private val versions: () -> JSONObject = { JSONObject() },
+    private val observation: PhotoObservation? = null,
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val origin = SystemClock.elapsedRealtime()
@@ -59,7 +60,8 @@ internal class CxrlSessionProbe(
     private var visibleConfirmed = false
     private var displayAccepted = false
     private var glassesListener: IGlassesEventListener? = null
-    private val runLog = MvpRunLog()
+    private val runLog = MvpRunLog(if (observation == null) "mock" else "gemma")
+    private var inferenceRequest: String? = null
     private var startKind = "unspecified"
     private var pendingPhoto: ((PhotoGate.Request) -> Unit)? = null
     private var pendingConnect = false
@@ -280,6 +282,10 @@ internal class CxrlSessionProbe(
 
     fun preparePhoto(ready: (PhotoGate.Request) -> Unit) {
         if (destroyed || pendingPhoto != null) return
+        if (observation != null && !observation.ready) {
+            record("Gemma 尚未就绪或旧推理仍在结束；请稍后重试")
+            return
+        }
         if (photos.current != null && !displayAccepted) {
             record("请先完成或取消当前拍照请求")
             return
@@ -340,7 +346,7 @@ internal class CxrlSessionProbe(
         if (data == null || data.isEmpty()) { stop("request=${request.id} 图片为空或超过大小限制"); return }
         record("request=${request.id} 完整图片回调 bytes=${data.size}；开始解码校验")
         decodeJob = decoder.submit {
-            val photo = try { PhotoDecoder.decode(data) } catch (_: Exception) { null }
+            val photo = try { PhotoDecoder.decode(data, observation != null) } catch (_: Exception) { null }
             handler.post {
                 if (destroyed || attempt != generation || photos.current !== request) {
                     photo?.bitmap?.recycle()
@@ -359,13 +365,12 @@ internal class CxrlSessionProbe(
                 preview(photo)
                 val meta = photo.metadata
                 record("request=${request.id} 图片已验证 ${meta.mime} ${meta.width}x${meta.height} bytes=${meta.bytes}")
-                runMock(request, photo)
+                if (observation == null) runMock(request, photo) else runGemma(request, photo)
             }
         }
     }
 
     private fun runMock(request: PhotoGate.Request, photo: DecodedPhoto) {
-        val currentSession = session ?: return
         if (destroyed || !started || photos.current !== request || displayRequest != null) return
         try {
             record("request=${request.id} Mock 开始；无模型/TTS/地图/云端依赖")
@@ -373,9 +378,43 @@ internal class CxrlSessionProbe(
             val result = MockObservation.create(request, photo.metadata)
             runLog.mark(request.id, "mock_end", SystemClock.elapsedRealtime())
             record("request=${request.id} Mock 完成：${result.getString("summary")}")
+            sendDisplay(request, result.getString("summary"))
+        } catch (error: Exception) {
+            stop("request=${request.id} Mock/显示异常：${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun runGemma(request: PhotoGate.Request, photo: DecodedPhoto) {
+        val model = observation ?: return
+        val jpeg = photo.modelJpeg ?: run { stop("图片未完成模型输入转换"); return }
+        if (!model.ready) { stop("Gemma 尚未就绪；未回退 Mock"); return }
+        val attempt = generation
+        inferenceRequest = request.id
+        runLog.mark(request.id, "inference_start", SystemClock.elapsedRealtime())
+        record("request=${request.id} Gemma 开始：已验证图片转为 JPEG，本机 GPU 推理")
+        photoDeadline = Runnable { stop("request=${request.id} Gemma 推理超时；旧结果将被丢弃") }
+        handler.postDelayed(photoDeadline!!, 120_000L)
+        model.observe(jpeg) completion@ { result ->
+            if (destroyed || attempt != generation || photos.current !== request || !started) return@completion
+            clearPhotoDeadline()
+            val summary = result.getOrElse {
+                stop("request=${request.id} Gemma 推理失败：${it.javaClass.simpleName}；未回退 Mock")
+                return@completion
+            }
+            runLog.mark(request.id, "inference_end", SystemClock.elapsedRealtime())
+            inferenceRequest = null
+            record("request=${request.id} Gemma 完成；非 Mock，仍需现场核对识别内容")
+            sendDisplay(request, "Gemma：$summary #${request.id.take(8)}")
+        }
+    }
+
+    private fun sendDisplay(request: PhotoGate.Request, text: String) {
+        val currentSession = session ?: return
+        if (destroyed || !started || photos.current !== request || displayRequest != null) return
+        try {
             displayRequest = request.id
             val attempt = generation
-            val json = MockObservation.viewUpdate(result.getString("summary"))
+            val json = MockObservation.viewUpdate(text)
             photoDeadline = Runnable { stop("request=${request.id} SDK 显示请求超时") }
             handler.postDelayed(photoDeadline!!, 20_000L)
             sdkExecutor.execute {
@@ -401,7 +440,7 @@ internal class CxrlSessionProbe(
                 }
             }
         } catch (error: Exception) {
-            stop("request=${request.id} Mock/显示异常：${error.javaClass.simpleName}")
+            stop("request=${request.id} 显示异常：${error.javaClass.simpleName}")
         }
     }
 
@@ -413,7 +452,7 @@ internal class CxrlSessionProbe(
         }
         visibleConfirmed = true
         runLog.mark(request.id, "human_visible", SystemClock.elapsedRealtime())
-        record("request=${request.id} 佩戴者人工确认看见本次 Mock 文本；非 SDK 显示回执")
+        record("request=${request.id} 佩戴者人工确认看见本次 ${if (observation == null) "Mock" else "Gemma"} 文本；非 SDK 显示回执")
     }
 
     private fun clearPhotoDeadline() {
@@ -431,6 +470,8 @@ internal class CxrlSessionProbe(
         displayRequest = null
         visibleConfirmed = false
         displayAccepted = false
+        inferenceRequest = null
+        observation?.cancel()
     }
 
     fun hostBackground() {
@@ -480,6 +521,7 @@ internal class CxrlSessionProbe(
         val failureStage = when {
             displayAccepted -> "visibility"
             displayRequest != null -> "display"
+            inferenceRequest != null -> "inference"
             photos.current?.phase == PhotoGate.Phase.DECODING -> "decode"
             photos.current?.phase == PhotoGate.Phase.RECEIVING -> "capture"
             photos.current?.phase == PhotoGate.Phase.VALIDATED -> "mock"
@@ -562,6 +604,7 @@ internal class CxrlSessionProbe(
         stop("Activity 退出，本地请求已作废，SDK 清理已排队")
         handler.removeCallbacksAndMessages(null)
         decoder.shutdownNow()
+        observation?.close()
         sdkExecutor.shutdown() // Let queued SDK close run; do not drop resource cleanup.
     }
 

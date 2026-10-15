@@ -2,9 +2,10 @@ package com.leqi.experiment.phonel
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import java.io.ByteArrayOutputStream
 
 internal data class PhotoMetadata(val bytes: Int, val width: Int, val height: Int, val mime: String)
-internal data class DecodedPhoto(val bitmap: Bitmap, val metadata: PhotoMetadata)
+internal data class DecodedPhoto(val bitmap: Bitmap, val metadata: PhotoMetadata, val modelJpeg: ByteArray? = null)
 
 internal object PhotoDecoder {
     const val MAX_BYTES = 12 * 1024 * 1024
@@ -23,7 +24,7 @@ internal object PhotoDecoder {
         return declared + 8 == data.size.toLong()
     }
 
-    fun decode(data: ByteArray): DecodedPhoto? {
+    fun decode(data: ByteArray, forModel: Boolean = false): DecodedPhoto? {
         if (data.isEmpty() || data.size > MAX_BYTES || !completeContainer(data)) return null
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
@@ -36,6 +37,12 @@ internal object PhotoDecoder {
             bitmap.recycle()
             return null
         }
-        return DecodedPhoto(bitmap, PhotoMetadata(data.size, bitmap.width, bitmap.height, bounds.outMimeType))
+        val jpeg = if (forModel) ByteArrayOutputStream().use {
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) || it.size() > MAX_BYTES) {
+                bitmap.recycle(); return null
+            }
+            it.toByteArray()
+        } else null
+        return DecodedPhoto(bitmap, PhotoMetadata(data.size, bitmap.width, bitmap.height, bounds.outMimeType), jpeg)
     }
 }

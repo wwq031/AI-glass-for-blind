@@ -48,3 +48,16 @@ test('duplicate requests, reversed clock and missing visible evidence are reject
   const missing = record('1'); delete (missing.timestamps_ms as any).human_visible;
   assert.throws(() => summarizeExports([document([missing])]), /evidence/);
 });
+
+test('Gemma inference and Mock timings stay separate even with matching APK metadata', () => {
+  const mock = record('mock');
+  const inference = record('gemma') as any;
+  inference.timestamps_ms.inference_start = inference.timestamps_ms.mock_start;
+  inference.timestamps_ms.inference_end = inference.timestamps_ms.mock_end;
+  delete inference.timestamps_ms.mock_start; delete inference.timestamps_ms.mock_end;
+  const groups = summarizeExports([document([mock]), { ...document([inference]), mode: 'gemma' }]);
+  assert.equal(groups.length, 2);
+  assert.equal(groups.find(group => group.mode === 'gemma').latency.inference.n, 1);
+  assert.equal(groups.find(group => group.mode === 'gemma').latency.mock, undefined);
+  assert.throws(() => summarizeExports([{ ...document([mock]), mode: 'gemma' }]), /stage/);
+});
