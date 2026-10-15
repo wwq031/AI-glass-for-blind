@@ -13,8 +13,13 @@ internal interface PhotoObservation : AutoCloseable {
     fun observe(jpeg: ByteArray, result: (Result<String>) -> Unit)
     fun cancel()
 }
+internal interface TextResponder {
+    val ready: Boolean
+    fun answer(prompt: String, result: (Result<String>) -> Unit)
+    fun cancelText()
+}
 
-internal class GemmaObservation(context: Context, private val report: (String) -> Unit) : PhotoObservation {
+internal class GemmaObservation(context: Context, private val report: (String) -> Unit) : PhotoObservation, TextResponder {
     private val app = context.applicationContext
     private val handler = Handler(Looper.getMainLooper())
     private val worker = MODEL_WORKER
@@ -23,6 +28,7 @@ internal class GemmaObservation(context: Context, private val report: (String) -
     @Volatile private var busy = false
     @Volatile private var closed = false
     private var generation = 0L // Main thread only.
+    private var textGeneration = 0L
     override val ready: Boolean get() = loaded && !busy && !closed
 
     init { load() }
@@ -69,9 +75,27 @@ internal class GemmaObservation(context: Context, private val report: (String) -
     }
 
     override fun cancel() { ++generation }
+    override fun answer(prompt: String, result: (Result<String>) -> Unit) {
+        if (!ready) { result(Result.failure(IllegalStateException("Model is not ready"))); return }
+        val attempt = ++textGeneration
+        busy = true
+        worker.execute {
+            val outcome = runCatching {
+                check(!closed)
+                val raw = engine!!.generateText(prompt, "speech-$attempt")
+                SpeechDialogue.parseAnswer(raw)
+            }
+            handler.post {
+                busy = false
+                if (!closed && textGeneration == attempt) result(outcome)
+                else if (!closed) report("旧对话推理已结束；未发送或播报旧回答")
+            }
+        }
+    }
+    override fun cancelText() { ++textGeneration }
     override fun close() {
         if (closed) return
-        closed = true; ++generation; loaded = false
+        closed = true; ++generation; ++textGeneration; loaded = false
         worker.execute { engine?.close(); engine = null }
         // The process worker also serializes Activity replacements against native close.
     }

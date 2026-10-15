@@ -1,0 +1,115 @@
+{
+  "runtime": {
+    "version": "1.13.8",
+    "url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/v1.13.8/sherpa-onnx-1.13.8.aar",
+    "bytes": 50129134,
+    "sha256": "633c24321e06b1fe79feafa03ea16cbc0f8a286641e2da3559bac91bdb13bd96"
+  },
+  "asr": {
+    "model": "SenseVoiceSmall INT8",
+    "archive_url": "https://github.com/k2-fsa/sherpa-onnx/releases/download/asr-models/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17.tar.bz2",
+    "archive_sha256": "7d1efa2138a65b0b488df37f8b89e3d91a60676e416f515b952358d83dfd347e"
+  },
+  "tts": {
+    "model": "MeloTTS zh_en INT8",
+    "repository": "csukuangfj/vits-melo-tts-zh_en",
+    "revision": "a0d5c6a264c0ef92d70d8661d8cc502d79627cd6"
+  },
+  "files": [
+    {
+      "name": "sensevoice/LICENSE",
+      "bytes": 71,
+      "sha256": "221c6df10b0931a5629adad671ea48fb7747e034c414b6d2bfa275bc3dd4ea17"
+    },
+    {
+      "name": "sensevoice/model.int8.onnx",
+      "bytes": 239233841,
+      "sha256": "c71f0ce00bec95b07744e116345e33d8cbbe08cef896382cf907bf4b51a2cd51"
+    },
+    {
+      "name": "sensevoice/tokens.txt",
+      "bytes": 315894,
+      "sha256": "f449eb28dc567533d7fa59be34e2abca8784f771850c78a47fb731a31429a1dc"
+    },
+    {
+      "name": "melo/date.fst",
+      "bytes": 59154,
+      "sha256": "eb8aa079ae3cb81d8f4404992f39d61a0cb990947512b5b8d1e54d1f6980e718"
+    },
+    {
+      "name": "melo/dict/hmm_model.utf8",
+      "bytes": 519739,
+      "sha256": "f17790586ac86dd048c8adffed052c4bd2b28ed0682972c1275e59040c0589a7"
+    },
+    {
+      "name": "melo/dict/idf.utf8",
+      "bytes": 5998717,
+      "sha256": "dbd1e03d72b2263cc8d84a4304ed77677eed9e7deaf43a1a5133bbba9733b535"
+    },
+    {
+      "name": "melo/dict/jieba.dict.utf8",
+      "bytes": 5071204,
+      "sha256": "3043b77068e09c9904f27cad82f12b6ebe9dbdb5aeff3b25e45ab7f9c1122b55"
+    },
+    {
+      "name": "melo/dict/pos_dict/char_state_tab.utf8",
+      "bytes": 327139,
+      "sha256": "28b7be1dd7369766a51445af4d42e9a2ba4bf374c13be5bc1ca7721e27271dbb"
+    },
+    {
+      "name": "melo/dict/pos_dict/prob_emit.utf8",
+      "bytes": 1687686,
+      "sha256": "c33c4cb7edf3b3a5947df7209b6e9f267eae1f21335d9e2bd2521ea07105457a"
+    },
+    {
+      "name": "melo/dict/pos_dict/prob_start.utf8",
+      "bytes": 4347,
+      "sha256": "13623ea0e9300bdb597cb2da28770b7b385d6c0098d66e516083fb01b6bd5d96"
+    },
+    {
+      "name": "melo/dict/pos_dict/prob_trans.utf8",
+      "bytes": 124159,
+      "sha256": "f22363e2307408293d180c6f9f6b5cb75879d52f722f7764fa2d3d0ae2400236"
+    },
+    {
+      "name": "melo/dict/stop_words.utf8",
+      "bytes": 8974,
+      "sha256": "b788b8a939d2e2fe079abd579ea98f12f9fb84370bfd0dddd81bb9381f7ab42c"
+    },
+    {
+      "name": "melo/dict/user.dict.utf8",
+      "bytes": 49,
+      "sha256": "495bbf49270408a1234690e1e6a97328f30a482a7a72aa769e8a12e8714b0c62"
+    },
+    {
+      "name": "melo/lexicon.txt",
+      "bytes": 6837671,
+      "sha256": "7236884b02435ac5d10cf69b4be40a61b45aa676b5300f0e412f185748fee528"
+    },
+    {
+      "name": "melo/LICENSE",
+      "bytes": 1053,
+      "sha256": "88a50e5a02bbc2a5c2f084dc19da751aa97b1690f5fda76cd8005c8634d1ca70"
+    },
+    {
+      "name": "melo/model.int8.onnx",
+      "bytes": 53517430,
+      "sha256": "f085f5079e05f039b800aeb542f5253c26a303211b0c6465d0d9387977855a63"
+    },
+    {
+      "name": "melo/number.fst",
+      "bytes": 64482,
+      "sha256": "743f402181fcfebf76cc2f0546b71fa26476e626fbe4e460fb7b4c3a7a8bd5bd"
+    },
+    {
+      "name": "melo/phone.fst",
+      "bytes": 88630,
+      "sha256": "1ac2b6fa56b1442320c4de7db08353bab8963a2b57f365eebcdd3a2d3562f8d7"
+    },
+    {
+      "name": "melo/tokens.txt",
+      "bytes": 655,
+      "sha256": "d18664a7e12bd7ea1022ddaf951e534e136815016c5a809d6b64156bffb4369d"
+    }
+  ]
+}

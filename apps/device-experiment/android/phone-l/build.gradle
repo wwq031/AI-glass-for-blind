@@ -5,6 +5,8 @@ plugins {
 
 def gemmaEnabled = providers.gradleProperty('cxrlGemma').map { it.toBoolean() }.getOrElse(false)
 def gemmaCodeOnly = providers.gradleProperty('gemmaCodeOnly').map { it.toBoolean() }.getOrElse(false)
+def speechEnabled = providers.gradleProperty('cxrlSpeech').map { it.toBoolean() }.getOrElse(false)
+if (speechEnabled && !gemmaEnabled) throw new GradleException('Speech dialogue requires -PcxrlGemma=true')
 
 android {
     namespace 'com.leqi.experiment.phonel'
@@ -13,9 +15,10 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode gemmaEnabled ? 4 : 3
-        versionName gemmaEnabled ? '0.3.0' : '0.2.1'
+        versionCode speechEnabled ? 5 : gemmaEnabled ? 4 : 3
+        versionName speechEnabled ? '0.4.0' : gemmaEnabled ? '0.3.0' : '0.2.1'
         buildConfigField 'boolean', 'GEMMA_ENABLED', gemmaEnabled.toString()
+        buildConfigField 'boolean', 'SPEECH_ENABLED', speechEnabled.toString()
         ndk { abiFilters 'arm64-v8a' }
         def sourceRevision = providers.gradleProperty('leqiSourceRevision').getOrElse('unknown')
         if (!(sourceRevision ==~ /[0-9a-f]{7,40}|unknown/)) throw new GradleException('Invalid leqiSourceRevision')
@@ -26,7 +29,8 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures { buildConfig = true }
-    androidResources { noCompress += ['modelpart'] }
+    // Compress weights in the speech build to keep the complete APK below 2 GiB.
+    androidResources { if (!speechEnabled) noCompress += ['modelpart'] }
 }
 
 kotlin {
@@ -39,6 +43,7 @@ kotlin {
 dependencies {
     implementation 'com.rokid.cxr:client-l:1.1.2'
     implementation project(':gemma-runtime')
+    implementation files(rootProject.file('../../phone-companion/android/libs/sherpa-onnx-1.13.8.aar'))
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.16'
 }
@@ -90,3 +95,38 @@ tasks.register('prepareGemmaAssets') {
 }
 android.sourceSets.main.assets.srcDir(generatedModelAssets)
 tasks.named('preBuild').configure { dependsOn 'prepareGemmaAssets' }
+
+def speechLock = rootProject.file('../../../tools/cxrl-speech-models.lock.json')
+def generatedSpeechAssets = layout.buildDirectory.dir('generated/speechAssets')
+tasks.register('prepareSpeechAssets') {
+    def modelRoot = providers.gradleProperty('speechModelRoot')
+    inputs.file(speechLock)
+    inputs.property('enabled', speechEnabled)
+    inputs.property('codeOnly', gemmaCodeOnly)
+    if (speechEnabled && !gemmaCodeOnly && modelRoot.isPresent()) inputs.dir(modelRoot)
+    outputs.dir(generatedSpeechAssets)
+    doLast {
+        def target = generatedSpeechAssets.get().asFile
+        delete target
+        target.mkdirs()
+        if (!speechEnabled || gemmaCodeOnly) return
+        if (!modelRoot.isPresent()) throw new GradleException('Full speech APK requires -PspeechModelRoot=<verified speech model directory>')
+        def lock = new groovy.json.JsonSlurper().parse(speechLock)
+        def root = file(modelRoot.get())
+        lock.files.each { item ->
+            def source = new File(root, item.name)
+            if (source.length() != item.bytes) throw new GradleException('Speech model size mismatch: ' + item.name)
+            def digest = java.security.MessageDigest.getInstance('SHA-256')
+            def outputFile = new File(target, 'speech/files/' + item.name)
+            outputFile.parentFile.mkdirs()
+            source.withInputStream { input -> outputFile.withOutputStream { output ->
+                byte[] buffer = new byte[1024 * 1024]; int count
+                while ((count = input.read(buffer)) != -1) { output.write(buffer, 0, count); digest.update(buffer, 0, count) }
+            } }
+            if (digest.digest().encodeHex().toString() != item.sha256) throw new GradleException('Speech model checksum mismatch: ' + item.name)
+        }
+        new File(target, 'speech/manifest.json').text = groovy.json.JsonOutput.toJson(lock)
+    }
+}
+android.sourceSets.main.assets.srcDir(generatedSpeechAssets)
+tasks.named('preBuild').configure { dependsOn 'prepareSpeechAssets' }

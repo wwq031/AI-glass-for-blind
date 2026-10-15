@@ -20,8 +20,8 @@ def verify(path):
         size = 0
         for part in manifest["parts"]:
             entry = apk.getinfo("assets/gemma/" + part["name"])
-            if entry.file_size != part["bytes"] or entry.compress_type != zipfile.ZIP_STORED:
-                raise ValueError("Truncated or compressed model part")
+            if entry.file_size != part["bytes"] or entry.compress_type not in (zipfile.ZIP_STORED, zipfile.ZIP_DEFLATED):
+                raise ValueError("Truncated model part or unsupported ZIP compression")
             with apk.open(entry) as source:
                 while chunk := source.read(4 * 1024 * 1024):
                     digest.update(chunk)
@@ -31,8 +31,25 @@ def verify(path):
         for required in ("lib/arm64-v8a/liblitertlm_jni.so", "assets/gemma-vision-prompt.txt",
                          "assets/licenses/NOTICE.txt", "assets/licenses/Apache-2.0.txt"):
             apk.getinfo(required)
-        return {"apk_bytes": Path(path).stat().st_size, "weights_bytes": size,
-                "model_sha256": digest.hexdigest(), "model_parts": len(manifest["parts"])}
+        report = {"apk_bytes": Path(path).stat().st_size, "weights_bytes": size,
+                  "model_sha256": digest.hexdigest(), "model_parts": len(manifest["parts"])}
+        if "assets/speech/manifest.json" in apk.namelist():
+            speech = json.loads(apk.read("assets/speech/manifest.json"))
+            lock = json.loads(Path(__file__).with_name('cxrl-speech-models.lock.json').read_text())
+            if speech != lock:
+                raise ValueError('Speech metadata does not match pinned model lock')
+            for item in speech['files']:
+                entry = apk.getinfo('assets/speech/files/' + item['name'])
+                with apk.open(entry) as source:
+                    actual = hashlib.file_digest(source, 'sha256').hexdigest()
+                if entry.file_size != item['bytes'] or actual != item['sha256']:
+                    raise ValueError('Packaged speech model mismatch: ' + item['name'])
+            apk.getinfo('lib/arm64-v8a/libsherpa-onnx-jni.so')
+            report['speech_files'] = len(speech['files'])
+            report['speech_runtime'] = speech['runtime']['version']
+            report['asr'] = speech['asr']['model']
+            report['tts'] = speech['tts']['model']
+        return report
 
 
 if __name__ == "__main__":

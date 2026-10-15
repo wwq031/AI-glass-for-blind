@@ -38,6 +38,7 @@ internal class CxrlSessionProbe(
     private val sdkExecutor: ExecutorService = Executors.newSingleThreadExecutor(),
     private val versions: () -> JSONObject = { JSONObject() },
     private val observation: PhotoObservation? = null,
+    private val onDescription: (String) -> Unit = { },
 ) {
     private val handler = Handler(Looper.getMainLooper())
     private val origin = SystemClock.elapsedRealtime()
@@ -301,6 +302,7 @@ internal class CxrlSessionProbe(
         stop("准备下一次拍照：回收旧 Session，撤销旧拍照确认")
         pendingPhoto = ready
     }
+    fun photoInProgress(): Boolean = pendingPhoto != null || (photos.current != null && !displayAccepted)
 
     fun confirmPhoto(id: String) {
         val currentSession = session ?: return
@@ -404,11 +406,11 @@ internal class CxrlSessionProbe(
             runLog.mark(request.id, "inference_end", SystemClock.elapsedRealtime())
             inferenceRequest = null
             record("request=${request.id} Gemma 完成；非 Mock，仍需现场核对识别内容")
-            sendDisplay(request, "Gemma：$summary #${request.id.take(8)}")
+            sendDisplay(request, "Gemma：$summary #${request.id.take(8)}", summary)
         }
     }
 
-    private fun sendDisplay(request: PhotoGate.Request, text: String) {
+    private fun sendDisplay(request: PhotoGate.Request, text: String, description: String? = null) {
         val currentSession = session ?: return
         if (destroyed || !started || photos.current !== request || displayRequest != null) return
         try {
@@ -432,6 +434,7 @@ internal class CxrlSessionProbe(
                             displayAccepted = true
                             runLog.mark(request.id, "display_call_end", callEnd)
                             record("request=${request.id} SDK 显示更新被接受；眼镜实际可见仍待人工核对")
+                            description?.let(onDescription)
                         }
                     } catch (error: Exception) {
                         handler.post { if (!destroyed && attempt == generation)
