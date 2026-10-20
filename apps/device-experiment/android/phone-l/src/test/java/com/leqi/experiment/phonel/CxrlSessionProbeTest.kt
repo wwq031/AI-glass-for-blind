@@ -448,6 +448,23 @@ class CxrlSessionProbeTest {
         assertFalse(run.getJSONObject("timestamps_ms").has("mock_start"))
         fixture.probe.destroy(); assertTrue(model.closed)
     }
+    @Test fun visionFailureExportsSafeCodeWithoutNativeMessageOrFalseDisplay() {
+        val model = FakeObservation()
+        val fixture = Fixture(observation = model)
+        fixture.connect(); fixture.capture(); fixture.deliver(jpeg())
+        model.finish(Result.failure(com.leqi.experiment.phonebt.GemmaBridgeException(
+            "private image prompt and native details", null, "vision_generation")))
+        idle()
+        val exported = fixture.probe.exportRecords()
+        val run = exported.getJSONArray("runs").getJSONObject(0)
+        assertEquals("inference", run.getString("failure_stage"))
+        assertEquals("vision_generation", run.getString("failure_code"))
+        assertFalse(exported.toString().contains("private image"))
+        assertTrue(fixture.lines.none { it.contains("private image") })
+        assertTrue(fixture.lines.any { it.contains("vision_generation") })
+        assertTrue(fixture.updates.isEmpty())
+        fixture.probe.destroy()
+    }
     @Test fun lateGemmaResultAfterBackgroundIsNotDisplayedOrReused() {
         val model = FakeObservation()
         val fixture = Fixture(observation = model)

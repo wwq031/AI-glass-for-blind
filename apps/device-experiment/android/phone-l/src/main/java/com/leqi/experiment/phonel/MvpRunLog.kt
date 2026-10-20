@@ -39,6 +39,12 @@ internal class MvpRunLog(private val mode: String = "mock") {
         if (run.getString("request_id") == id) run.put("image", JSONObject()
             .put("bytes", photo.bytes).put("width", photo.width).put("height", photo.height).put("mime", photo.mime))
     }
+    fun inferenceFailure(id: String, code: String) {
+        val run = active ?: return
+        if (run.getString("request_id") == id && run.getString("outcome") == "pending")
+            run.put("failure_code", if (code in setOf("vision_initialization", "vision_generation",
+                "invalid_model_output", "gemma_error")) code else "gemma_error")
+    }
     fun finish(stage: String) {
         require(stage in setOf("consent", "capture", "decode", "mock", "inference", "display", "visibility", "lifecycle"))
         val run = active

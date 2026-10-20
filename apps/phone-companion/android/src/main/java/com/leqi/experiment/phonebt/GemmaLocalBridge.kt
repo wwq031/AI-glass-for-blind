@@ -13,7 +13,8 @@ import com.google.ai.edge.litertlm.SamplerConfig
 import java.io.File
 
 /** 本地推理失败。桥接层只抛出这一种异常，绝不返回占位文本充当结果。 */
-class GemmaBridgeException(message: String, cause: Throwable? = null) : Exception(message, cause)
+class GemmaBridgeException(message: String, cause: Throwable? = null,
+    val failureCode: String = "gemma_error") : Exception(message, cause)
 
 /**
  * 手机端 Gemma 4 E2B（LiteRT-LM 0.17.1）本地推理桥接。
@@ -87,6 +88,21 @@ class GemmaLocalBridge @JvmOverloads constructor(
             }
             engine = created
             Log.i(TAG, "本地模型已就绪：" + modelFile.absolutePath + " 线程=" + cpuThreads)
+        }
+    }
+
+    /** Engine.initialize alone does not load lazy vision resources in LiteRT-LM 0.17.1.
+     * Creating a conversation validates them before the UI advertises photo readiness.
+     * No user message, image, generation or camera call is performed here.
+     */
+    @Throws(GemmaBridgeException::class)
+    fun verifyVisionReady() = synchronized(lock) {
+        initialize()
+        try {
+            engine!!.createConversation(ConversationConfig(samplerConfig = DETERMINISTIC,
+                maxOutputToken = VISION_MAX_OUTPUT_TOKENS)).use { }
+        } catch (error: Throwable) {
+            throw GemmaBridgeException("视觉资源自检失败", error, "vision_initialization")
         }
     }
 
@@ -205,7 +221,8 @@ class GemmaLocalBridge @JvmOverloads constructor(
             } catch (error: GemmaBridgeException) {
                 throw error
             } catch (error: Throwable) {
-                throw GemmaBridgeException("本地推理失败：" + describe(error), error)
+                throw GemmaBridgeException("本地推理失败：" + describe(error), error,
+                    if (media is Content.ImageBytes) "vision_generation" else "audio_generation")
             } finally {
                 runCatching { conversation?.close() }
             }

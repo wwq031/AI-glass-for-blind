@@ -400,7 +400,13 @@ internal class CxrlSessionProbe(
             if (destroyed || attempt != generation || photos.current !== request || !started) return@completion
             clearPhotoDeadline()
             val summary = result.getOrElse {
-                stop("request=${request.id} Gemma 推理失败：${it.javaClass.simpleName}；未回退 Mock")
+                val code = when (it) {
+                    is com.leqi.experiment.phonebt.GemmaBridgeException -> it.failureCode
+                    is IllegalArgumentException -> "invalid_model_output"
+                    else -> "gemma_error"
+                }
+                runLog.inferenceFailure(request.id, code)
+                stop("request=${request.id} Gemma 推理失败：$code (${it.javaClass.simpleName})；未回退 Mock")
                 return@completion
             }
             runLog.mark(request.id, "inference_end", SystemClock.elapsedRealtime())

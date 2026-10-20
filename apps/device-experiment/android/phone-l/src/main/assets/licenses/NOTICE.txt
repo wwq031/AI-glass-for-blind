@@ -1,8 +1,8 @@
-This APK can include the unmodified Google Gemma 4 E2B GPU model.
-Model: litert-community/gemma-4-E2B-it-litert-lm / gemma-4-E2B-it-gpu.litertlm
+This APK can include the unmodified Google Gemma 4 E2B multimodal model.
+Model: litert-community/gemma-4-E2B-it-litert-lm / gemma-4-E2B-it.litertlm (complete multimodal bundle)
 Repository revision: b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1
 Source: https://huggingface.co/litert-community/gemma-4-E2B-it-litert-lm
-SHA-256: a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5
+SHA-256: 181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c
 The source model card declares Apache License 2.0. See Apache-2.0.txt.
 
 LiteRT-LM 0.17.1, Copyright The LiteRT-LM Authors, Apache License 2.0.
