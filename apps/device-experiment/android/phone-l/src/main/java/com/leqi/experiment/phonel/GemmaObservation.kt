@@ -37,7 +37,7 @@ internal class GemmaObservation(context: Context, private val report: (String) -
     private fun load() {
         worker.execute {
             try {
-                status("正在准备内置 Gemma，首次启动需复制约 2GB 权重，请保持应用前台")
+                status("正在准备内置 Gemma，首次启动需复制约 2.59GB 完整权重，请保持应用前台")
                 var last = -10
                 val file = BundledModel.prepare(app, { closed }) { percent ->
                     if (percent >= last + 10) { last = percent; status("内置模型校验/准备：$percent%") }
@@ -47,11 +47,14 @@ internal class GemmaObservation(context: Context, private val report: (String) -
                 val created = GemmaLocalBridge(file, java.io.File(app.cacheDir, "gemma-gpu"), gpu = true)
                 engine = created
                 created.initialize()
+                status("正在自检 Gemma 视觉资源，尚未调用相机")
+                created.verifyVisionReady()
                 loaded = true
                 status("Gemma 已就绪；确认拍照后在本机识别图片")
             } catch (error: Throwable) {
-                engine?.close(); engine = null; loaded = false
-                status("Gemma 准备失败：${error.javaClass.simpleName}；检查剩余空间与 GPU 支持，重新打开应用重试")
+                runCatching { engine?.close() }; engine = null; loaded = false
+                val code = (error as? com.leqi.experiment.phonebt.GemmaBridgeException)?.failureCode ?: "model_preparation"
+                status("Gemma 准备失败：$code；检查完整视觉权重、剩余空间与 GPU 支持，重新打开应用重试")
             }
         }
     }

@@ -252,8 +252,8 @@ class PhoneLActivity : Activity() {
             .put("phone_model", Build.MODEL).put("phone_api", Build.VERSION.SDK_INT)
             .put("glasses_firmware", firmware)
         if (BuildConfig.GEMMA_ENABLED) metadata
-            .put("model", "gemma-4-E2B-it-gpu.litertlm").put("model_backend", "gpu")
-            .put("model_sha256", "a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5")
+            .put("model", "gemma-4-E2B-it.litertlm").put("model_backend", "gpu")
+            .put("model_sha256", "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c")
             .put("inference_runtime", "litertlm-android:0.17.1")
         for (name in listOf("com.rokid.sprite.aiapp", "com.rokid.sprite.global.aiapp", "com.rokid.uxr")) {
             try {

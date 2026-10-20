@@ -191,3 +191,21 @@ CI 下载固定哈希的 Sherpa Android AAR，以 `-PcxrlSpeech=true -PgemmaCode
 7. 完成后导出 JSON。语音记录位于 speech 字段，包含请求代号、阶段时间、失败阶段、输出路由和人工听见确认，不包含录音、转写、回答或对话历史。历史只存内存，进入后台/清空/退出时撤销；播放头完成不等于实际听见。
 
 当前不是唤醒词、自动 VAD、持续监听、全双工可打断对话或完整导航系统。实际手机的麦克风、Gemma GPU、语音延迟/准确率、扬声器及眼镜蓝牙需要真机验收；代码、构建、桌面原生测试不替代这些证据。
+
+## v0.4.1 / v0.3.1 视觉权重修复（2026-10-20）
+
+上文 v0.3.0 / v0.4.0 的“GPU 权重支持图片识别”结论有误，现予以更正。旧版 `gemma-4-E2B-it-gpu.litertlm` 只有 metadata、tokenizer 和 `tf_lite_artisan_text_decoder` 三个 section，没有视觉编码器。引擎 initialize 成功不会加载延迟创建的视觉资源，直到 createConversation 才报 `TF_LITE_VISION_ENCODER not found`；不能把旧版安装、引擎加载和替身测试通过当作真实视觉推理通过。用户的小米 15 Pro 真机日志显示照片接收与校验正常，失败发生在此处。
+
+新版固定使用同一官方 revision 的完整 `gemma-4-E2B-it.litertlm`：2588147712 bytes，SHA-256 `181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c`。包含原始视觉编码器、适配器和文本模型，不做量化修改。下载脚本、构建校验、模型 assets manifest、手机导出 metadata、NOTICE 和 APK 验证器已同步。完整语音版 versionCode=6 / versionName=0.4.1；视觉版 versionName=0.3.1。
+
+启动在模型 initialize 后创建并关闭一次无输入 Conversation，验证延迟加载的视觉资源，成功后才显示 Gemma 已就绪；该检查不调用相机或生成回答。初始化失败会显示阶段码；实际图片推理失败在脱敏 JSON 记录 `failure_code`，不导出原生错误正文、图片或提示词，不回退 Mock。
+
+新的完整构建仍按前文命令执行，但 `-PgemmaModelPath` 必须改为 `artifacts/models/gemma-4-E2B-it.litertlm`。发布前执行 APK 验证器，检查完整 hash 和必需视觉 section。桌面真实回归命令如下（需要固定版本 `litert-lm==0.17.1`）：
+
+```powershell
+python tools/test-cxrl-gemma-native.py --model artifacts/models/gemma-4-E2B-it.litertlm --legacy-model artifacts/models/gemma-4-E2B-it-gpu.litertlm
+```
+
+该脚本解析真实容器、复现旧权重失败，并使用官方公开苹果测试图，对完整模型执行三次新的 Conversation，校验真实中文 JSON 结果包含苹果。Windows GPU 实测通过；这不是小米手机或眼镜真机通过证据。现场仍需按交付说明完成三张不同物体的拍照与显示复测。
+
+完整 APK 超过 GitHub 单附件 2GiB 限制，使用 `tools/package-cxrl-release.py` 分片分发，`restore-cxrl-apk.ps1` 校验每片和最终 APK 后恢复为单文件；不改变 APK 签名或模型。详见仓库 `docs/handoff/2026-10-20-cxrl-vision-fix.md`。原始权重约 2.59GB，下载大小和安装占用应据新版实测，不再沿用旧版 2.08GB 数字。

@@ -15,8 +15,8 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode speechEnabled ? 5 : gemmaEnabled ? 4 : 3
-        versionName speechEnabled ? '0.4.0' : gemmaEnabled ? '0.3.0' : '0.2.1'
+        versionCode speechEnabled ? 6 : gemmaEnabled ? 6 : 3
+        versionName speechEnabled ? '0.4.1' : gemmaEnabled ? '0.3.1' : '0.2.1'
         buildConfigField 'boolean', 'GEMMA_ENABLED', gemmaEnabled.toString()
         buildConfigField 'boolean', 'SPEECH_ENABLED', speechEnabled.toString()
         ndk { abiFilters 'arm64-v8a' }
@@ -29,7 +29,7 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures { buildConfig = true }
-    // Compress weights in the speech build to keep the complete APK below 2 GiB.
+    // Lossless compression reduces download size; full multimodal releases may need transport parts.
     androidResources { if (!speechEnabled) noCompress += ['modelpart'] }
 }
 
@@ -61,10 +61,10 @@ tasks.register('prepareGemmaAssets') {
         delete target
         target.mkdirs()
         if (!gemmaEnabled || gemmaCodeOnly) return
-        if (!modelPath.isPresent()) throw new GradleException('Full Gemma APK requires -PgemmaModelPath=<verified GPU .litertlm>; use -PgemmaCodeOnly=true only for CI.')
+        if (!modelPath.isPresent()) throw new GradleException('Full Gemma APK requires -PgemmaModelPath=<verified multimodal .litertlm>; use -PgemmaCodeOnly=true only for CI.')
         def source = file(modelPath.get())
-        def expected = 'a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5'
-        if (source.length() != 2008432640L) throw new GradleException('Unexpected Gemma GPU model size')
+        def expected = '181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c'
+        if (source.length() != 2588147712L) throw new GradleException('Expected complete Gemma multimodal model; GPU-only bundle has no vision encoder')
         def digest = java.security.MessageDigest.getInstance('SHA-256')
         def parts = []
         def root = new File(target, 'gemma'); root.mkdirs()
@@ -89,7 +89,7 @@ tasks.register('prepareGemmaAssets') {
         def actual = digest.digest().encodeHex().toString()
         if (actual != expected) { delete root; throw new GradleException('Gemma model SHA-256 mismatch') }
         new File(root, 'manifest.json').text = groovy.json.JsonOutput.toJson([
-            model: 'gemma-4-E2B-it-gpu.litertlm', bytes: source.length(), sha256: expected,
+            model: 'gemma-4-E2B-it.litertlm', bytes: source.length(), sha256: expected,
             revision: 'b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1', parts: parts])
     }
 }

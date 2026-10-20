@@ -1,12 +1,34 @@
-"""Verify that a complete release APK embeds the pinned Gemma GPU weights."""
+"""Verify that a complete release APK embeds the pinned multimodal Gemma weights."""
 import hashlib
 import json
+import struct
 import sys
 import zipfile
 from pathlib import Path
 
-EXPECTED_HASH = "a53a59001894c58e6bdb5b9b227709f91a2e3e556baa7d85acf9c55402ba5cf5"
-EXPECTED_BYTES = 2008432640
+EXPECTED_HASH = "181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c"
+EXPECTED_BYTES = 2588147712
+
+
+def verify_multimodal_header(source):
+    """Bounded metadata check, in addition to the full pinned SHA-256 below.
+
+    Official LiteRT-LM header: magic[8], version[12], padding[4], end[8],
+    FlatBuffer section directory. No multi-GB model allocation is needed.
+    """
+    prefix = source.read(32)
+    if len(prefix) != 32 or prefix[:8] != b"LITERTLM":
+        raise ValueError("Invalid LiteRT-LM model header")
+    end = struct.unpack_from("<Q", prefix, 24)[0]
+    if not 32 < end <= 1024 * 1024:
+        raise ValueError("Invalid LiteRT-LM directory bounds")
+    directory = source.read(end - 32)
+    if len(directory) != end - 32:
+        raise ValueError("Truncated model directory")
+    required = (b"tf_lite_vision_encoder", b"tf_lite_vision_adapter", b"tf_lite_prefill_decode")
+    if any(kind not in directory for kind in required):
+        raise ValueError("Complete text/vision sections required; text-only GPU weights are unsupported")
+    return [kind.decode("ascii") for kind in required]
 
 
 def verify(path):
@@ -16,6 +38,8 @@ def verify(path):
             raise ValueError("Unexpected model manifest")
         if len({part["name"] for part in manifest["parts"]}) != len(manifest["parts"]):
             raise ValueError("Duplicate weight part")
+        with apk.open("assets/gemma/" + manifest["parts"][0]["name"]) as first:
+            model_types = verify_multimodal_header(first)
         digest = hashlib.sha256()
         size = 0
         for part in manifest["parts"]:
@@ -32,7 +56,8 @@ def verify(path):
                          "assets/licenses/NOTICE.txt", "assets/licenses/Apache-2.0.txt"):
             apk.getinfo(required)
         report = {"apk_bytes": Path(path).stat().st_size, "weights_bytes": size,
-                  "model_sha256": digest.hexdigest(), "model_parts": len(manifest["parts"])}
+                  "model_sha256": digest.hexdigest(), "model_parts": len(manifest["parts"]),
+                  "required_model_types": model_types}
         if "assets/speech/manifest.json" in apk.namelist():
             speech = json.loads(apk.read("assets/speech/manifest.json"))
             lock = json.loads(Path(__file__).with_name('cxrl-speech-models.lock.json').read_text())
