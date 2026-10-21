@@ -40,10 +40,11 @@ class SpeechDialogueTest {
     }
     private class Engines : SpeechEngines {
         var asrCalls = 0; var ttsCalls = 0; var closed = false
-        var failAsr = false; var failTts = false
+        var failAsr = false; var failTts = false; var failTtsAt = 0
+        val synthesized = mutableListOf<String>()
         override fun initialize() { }
         override fun transcribe(samples: FloatArray): String { asrCalls++; check(!failAsr); return "你好，测试私有语音" }
-        override fun synthesize(text: String): SpeechAudio { ttsCalls++; check(!failTts); return SpeechAudio(FloatArray(16000) { 0.1f }, 16000) }
+        override fun synthesize(text: String): SpeechAudio { ttsCalls++; synthesized.add(text); check(!failTts && ttsCalls != failTtsAt); return SpeechAudio(FloatArray(16000) { 0.1f }, 16000) }
         override fun close() { closed = true }
     }
     private class Fixture(worker: Executor = Executor { it.run() }) {
@@ -178,5 +179,106 @@ class SpeechDialogueTest {
         fixture.reply(); fixture.heard()
         assertEquals(1, fixture.mic.starts)
         fixture.dialogue.close()
+    }
+    @Test fun firstPhrasePlaysBeforeWholeAnswerAndPrefetchIsBoundedToOneChunk() {
+        val queue = Queue(); val fixture = Fixture(queue); queue.drain(); idle()
+        val text = "这是第一段介绍内容，用于测试快速播报。第二段说明仍然应该完整读出，不能因为首段播放就丢失后续的内容。第三段也需要全部播报完毕。"
+        val chunks = SpeechChunks.split(text)
+        assertTrue(chunks.size >= 3)
+        fixture.dialogue.speak(text)
+        queue.drain(); idle()
+        assertEquals(1, fixture.speaker.calls)
+        assertEquals(1, fixture.engines.ttsCalls)
+        val stamps = fixture.dialogue.export().getJSONArray("runs").getJSONObject(0).getJSONObject("timestamps_ms")
+        assertTrue(stamps.has("first_audio_ready")); assertTrue(stamps.has("play_start"))
+        assertFalse(stamps.has("tts_end"))
+        queue.drain(); idle()
+        assertEquals(2, fixture.engines.ttsCalls)
+        assertEquals(1, fixture.speaker.calls) // Second chunk waits; never overlap two playbacks.
+        assertTrue(queue.work.isEmpty()) // No third synthesis until the ready chunk is consumed.
+        for (index in chunks.indices) {
+            fixture.heard(); queue.drain(); idle()
+        }
+        assertEquals(chunks.size, fixture.speaker.calls)
+        assertEquals(text, fixture.engines.synthesized.joinToString(""))
+        assertEquals(SpeechStage.IDLE, fixture.dialogue.stage)
+        val record = fixture.dialogue.export().getJSONArray("runs").getJSONObject(0)
+        assertEquals("completed", record.getString("outcome"))
+        assertEquals(chunks.size, record.getInt("tts_chunks"))
+        assertTrue(record.getJSONObject("timestamps_ms").has("tts_end"))
+        assertFalse(record.toString().contains("第一段"))
+        fixture.dialogue.close(); queue.drain()
+    }
+    @Test fun cancellingFirstPlaybackPreventsQueuedPrefetchAndRejectsOldCallbacks() {
+        val queue = Queue(); val fixture = Fixture(queue); queue.drain(); idle()
+        fixture.dialogue.speak("先播这一小段文字，然后还应该有很多后续内容用于检查取消，不能在取消后继续合成或发声。")
+        queue.drain(); idle()
+        val oldPlayback = fixture.speaker.callback
+        fixture.dialogue.cancel()
+        queue.drain(); idle()
+        assertEquals(1, fixture.engines.ttsCalls); assertEquals(1, fixture.speaker.calls)
+        fixture.dialogue.startRecording()
+        oldPlayback(Result.success("手机扬声器")); idle()
+        assertEquals(SpeechStage.RECORDING, fixture.dialogue.stage)
+        assertEquals("cancelled", fixture.dialogue.export().getJSONArray("runs").getJSONObject(0).getString("outcome"))
+        fixture.dialogue.close(); queue.drain()
+    }
+    @Test fun prefetchedSynthesisFailureStopsPlaybackAndCannotReportCompleted() {
+        val queue = Queue(); val fixture = Fixture(queue); queue.drain(); idle()
+        fixture.engines.failTtsAt = 2
+        fixture.dialogue.speak("第一段能够正常生成，后面的段落将模拟合成失败，不能继续播报或者错误地报告整轮成功。")
+        queue.drain(); idle()
+        val firstPlayback = fixture.speaker.callback
+        queue.drain(); idle()
+        assertEquals(SpeechStage.FAILED, fixture.dialogue.stage)
+        assertTrue(fixture.speaker.stops > 0)
+        firstPlayback(Result.success("手机扬声器")); idle()
+        val record = fixture.dialogue.export().getJSONArray("runs").getJSONObject(0)
+        assertEquals("failed", record.getString("outcome"))
+        assertEquals("tts", record.getString("failure_stage"))
+        assertEquals(1, fixture.speaker.calls)
+        fixture.dialogue.close(); queue.drain()
+    }
+    @Test fun phrasesPreserveUnicodeNumbersAndAllOriginalContent() {
+        val text = "你好，这是给你的简短介绍。今天是2026年10月21日，金额是12345.67元，后面还有一个表情😀以及英文helloWorld。"
+        val pieces = SpeechChunks.split(text)
+        assertEquals(text, pieces.joinToString(""))
+        assertTrue(pieces.first().codePointCount(0, pieces.first().length) <= 16)
+        assertTrue(pieces.any { it.contains("12345.67") })
+        assertTrue(pieces.any { it.contains("helloWorld") })
+        assertTrue(pieces.all { !Character.isLowSurrogate(it.first()) && !Character.isHighSurrogate(it.last()) })
+        assertThrows(IllegalArgumentException::class.java) { SpeechChunks.split(" ") }
+    }
+    @Test fun cancelClearsAlreadyPreparedAudioBeforeNewUtterance() {
+        val queue = Queue(); val fixture = Fixture(queue); queue.drain(); idle()
+        fixture.dialogue.speak("这是之前的一段回答，后面有提前生成的旧语音，取消后它们必须全部丢弃，不能混入新的结果。")
+        queue.drain(); idle(); queue.drain(); idle()
+        assertEquals(2, fixture.engines.ttsCalls)
+        val old = fixture.speaker.callback
+        fixture.dialogue.cancel()
+        fixture.dialogue.speak("全新的回答")
+        queue.drain(); idle()
+        old(Result.success("旧设备")); idle()
+        assertEquals(2, fixture.speaker.calls)
+        assertEquals(SpeechStage.PLAYING, fixture.dialogue.stage)
+        fixture.heard()
+        assertEquals(SpeechStage.IDLE, fixture.dialogue.stage)
+        val records = fixture.dialogue.export().getJSONArray("runs")
+        assertEquals("cancelled", records.getJSONObject(0).getString("outcome"))
+        assertEquals("completed", records.getJSONObject(1).getString("outcome"))
+        fixture.dialogue.close(); queue.drain()
+    }
+    @Test fun pipelineTimeoutStopsPlayingAndRejectsQueuedLaterAudio() {
+        val queue = Queue(); val fixture = Fixture(queue); queue.drain(); idle()
+        fixture.dialogue.speak("这一段会正常开始播放，但是后面的合成任务被故意搁置，用于验证总超时后不会继续生成并播放旧的声音。")
+        queue.drain(); idle()
+        val old = fixture.speaker.callback
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(181))
+        queue.drain(); idle(); old(Result.success("手机扬声器")); idle()
+        assertEquals(SpeechStage.FAILED, fixture.dialogue.stage)
+        assertEquals(1, fixture.engines.ttsCalls)
+        assertEquals(1, fixture.speaker.calls)
+        assertEquals("failed", fixture.dialogue.export().getJSONArray("runs").getJSONObject(0).getString("outcome"))
+        fixture.dialogue.close(); queue.drain()
     }
 }
