@@ -1,7 +1,13 @@
-param([string]$ReleaseDirectory = $PSScriptRoot)
+param([string]$ReleaseDirectory = $PSScriptRoot, [string]$ManifestName = '')
 $ErrorActionPreference = 'Stop'
 $releaseRoot = (Resolve-Path -LiteralPath $ReleaseDirectory).Path
-$manifest = Get-Content -LiteralPath (Join-Path $releaseRoot 'manifest-v0.4.1.json') -Raw | ConvertFrom-Json
+if (!$ManifestName) {
+    $candidates = @(Get-ChildItem -LiteralPath $releaseRoot -Filter 'manifest-v*.json' -File)
+    if ($candidates.Count -ne 1) { throw 'Keep exactly one release manifest in this folder, or use -ManifestName manifest-v0.4.2.json' }
+    $ManifestName = $candidates[0].Name
+}
+if ($ManifestName -notmatch '^manifest-v[0-9]+\.[0-9]+\.[0-9]+\.json$') { throw 'Invalid manifest name' }
+$manifest = Get-Content -LiteralPath (Join-Path $releaseRoot $ManifestName) -Raw | ConvertFrom-Json
 if ($manifest.apk_name -notmatch '^phone-l-speech-v[0-9]+\.[0-9]+\.[0-9]+\.apk$' -or
     $manifest.apk_sha256 -notmatch '^[0-9a-f]{64}$' -or $manifest.apk_bytes -le 0) {
     throw 'Invalid APK manifest'

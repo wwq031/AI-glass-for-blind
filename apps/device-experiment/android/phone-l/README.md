@@ -209,3 +209,9 @@ python tools/test-cxrl-gemma-native.py --model artifacts/models/gemma-4-E2B-it.l
 该脚本解析真实容器、复现旧权重失败，并使用官方公开苹果测试图，对完整模型执行三次新的 Conversation，校验真实中文 JSON 结果包含苹果。Windows GPU 实测通过；这不是小米手机或眼镜真机通过证据。现场仍需按交付说明完成三张不同物体的拍照与显示复测。
 
 完整 APK 超过 GitHub 单附件 2GiB 限制，使用 `tools/package-cxrl-release.py` 分片分发，`restore-cxrl-apk.ps1` 校验每片和最终 APK 后恢复为单文件；不改变 APK 签名或模型。详见仓库 `docs/handoff/2026-10-20-cxrl-vision-fix.md`。原始权重约 2.59GB，下载大小和安装占用应据新版实测，不再沿用旧版 2.08GB 数字。
+
+## v0.4.2 TTS 首段提前播放
+
+2026-10-21 用户补充确认三轮语音、物体拍摄、描述和请求代号均已现场核对。当前重点为 TTS 等待：两条完整对话从结束录音到请求播放约 10.95 / 8.45 秒，主要等待为合成。新版使用短首段和有界预加载，开始播放后继续合成后续内容；不会为提速丢弃原文或加快播放倍率。取消和后台清空未播放音频，整轮播放完成前不记录成功。
+
+新语音字段 `first_audio_ready`、`tts_chunks`、`tts_strategy`、`tts_compute_ms` 区分首段等待、合成工作量和全段墙钟时间。录音结束到请求首段播放仍以 `play_start - record_end` 计算；不是精确声学延迟。测试与验收范围见 `docs/handoff/2026-10-21-cxrl-tts-latency.md`。实际改善及段间停顿需同一手机对比，桌面 CPU 基准仅验证真实合成和方案趋势。权重不变，语音版 versionCode=7 / versionName=0.4.2。

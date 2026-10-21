@@ -46,6 +46,16 @@ internal class SpeechDialogue(
     private var photoDescription = ""
     private val records = ArrayDeque<JSONObject>()
     private var currentRecord: JSONObject? = null
+    private var speechParts = emptyList<String>()
+    private var nextPart = 0
+    private var pendingAudio: SpeechAudio? = null
+    private var synthesizing = false
+    private var playing = false
+    private var playbackStarted = false
+    private var speechSamples = 0L
+    private var speechRate = 0
+    private var synthesisMs = 0L
+    private var lastRoute = ""
 
     init {
         show(SpeechStage.LOADING, "正在准备 SenseVoiceSmall 与 MeloTTS；尚未录音")
@@ -135,27 +145,65 @@ internal class SpeechDialogue(
         recorder.finish()
     }
     private fun synthesize(attempt: Long, text: String) {
-        show(SpeechStage.TTS, "MeloTTS 正在本机合成语音")
+        speechParts = SpeechChunks.split(text)
+        nextPart = 0; pendingAudio = null; synthesizing = false; playing = false
+        playbackStarted = false; speechSamples = 0; speechRate = 0; synthesisMs = 0; lastRoute = ""
+        currentRecord?.put("tts_chunks", speechParts.size)?.put("tts_strategy", "bounded_phrase_pipeline")
+        show(SpeechStage.TTS, "MeloTTS 正在合成第一段，准备好即播报")
         mark("tts_start"); deadline(attempt, 60_000L, "语音合成超时；未播放旧音频")
+        synthesizeNext(attempt)
+    }
+    private fun synthesizeNext(attempt: Long) {
+        if (!valid(attempt) || synthesizing || pendingAudio != null || nextPart >= speechParts.size) return
+        val index = nextPart++
+        val part = speechParts[index]
+        synthesizing = true
         worker.execute {
             if (!valid(attempt)) return@execute
-            val result = runCatching { engines!!.synthesize(text).also { it.validate() } }
+            val start = SystemClock.elapsedRealtime()
+            val result = runCatching { engines!!.synthesize(part).also { it.validate() } }
+            val duration = SystemClock.elapsedRealtime() - start
             handler.post completed@ {
-                if (!valid(attempt) || stage != SpeechStage.TTS) return@completed
-                clearTimeout(); mark("tts_end")
-                val audio = result.getOrElse { fail("播报合成失败：${it.javaClass.simpleName}"); return@completed }
-                show(SpeechStage.PLAYING, "正在播报；开始新录音前需播报结束或手动取消")
-                mark("play_start"); deadline(attempt, 95_000L, "音频播放超时")
-                speaker.play(audio) playback@ { played ->
-                    if (!valid(attempt) || stage != SpeechStage.PLAYING) return@playback
-                    clearTimeout()
-                    val route = played.getOrElse { fail("播放失败：${it.javaClass.simpleName}"); return@playback }
-                    mark("play_end"); currentRecord?.put("outcome", "completed")?.put("output_route", route)
-                    currentRecord = null
-                    show(SpeechStage.IDLE, "播报结束；实际输出：$route。可以开始下一句")
+                if (!valid(attempt)) return@completed
+                synthesizing = false
+                val audio = result.getOrElse { fail("播报合成失败：${it.javaClass.simpleName}", "tts"); return@completed }
+                if (speechRate == 0) speechRate = audio.sampleRate
+                speechSamples += audio.samples.size
+                if (speechRate != audio.sampleRate || speechSamples > speechRate * 90L) {
+                    fail("合成音频总长度或采样率无效", "tts"); return@completed
                 }
+                synthesisMs += duration
+                currentRecord?.put("tts_compute_ms", synthesisMs)
+                pendingAudio = audio
+                if (index == 0) mark("first_audio_ready")
+                if (nextPart == speechParts.size) mark("tts_end")
+                playNext(attempt)
             }
         }
+    }
+    private fun playNext(attempt: Long) {
+        if (!valid(attempt) || playing) return
+        val audio = pendingAudio ?: return
+        pendingAudio = null; playing = true
+        show(SpeechStage.PLAYING, "正在分段播报并合成后续内容；可随时取消")
+        if (!playbackStarted) {
+            playbackStarted = true; mark("play_start")
+            deadline(attempt, 180_000L, "分段合成或播放超时；旧音频已停止")
+        }
+        speaker.play(audio) playback@ { played ->
+            if (!valid(attempt)) return@playback
+            playing = false
+            lastRoute = played.getOrElse { fail("播放失败：${it.javaClass.simpleName}", "playing"); return@playback }
+            if (pendingAudio != null) playNext(attempt)
+            else if (!synthesizing && nextPart == speechParts.size) {
+                clearTimeout(); mark("play_end")
+                currentRecord?.put("outcome", "completed")?.put("output_route", lastRoute)
+                currentRecord = null
+                show(SpeechStage.IDLE, "播报结束；实际输出：$lastRoute。可以开始下一句")
+            } else show(SpeechStage.TTS, "等待下一段语音；可随时取消")
+        }
+        // At most one playing chunk and one ready/in-flight chunk: no unbounded PCM queue.
+        synthesizeNext(attempt)
     }
     fun speak(text: String) {
         if (closed || active || !loaded) return
@@ -200,6 +248,7 @@ $context"""
     }
     fun cancel(reason: String = "已取消录音、推理结果和播报") {
         ++generation; clearTimeout(); recorder.cancel(); speaker.stop(); responder.cancelText()
+        speechParts = emptyList(); pendingAudio = null; synthesizing = false; playing = false
         currentRecord?.put("outcome", "cancelled"); currentRecord = null
         if (!closed) show(when {
             loaded -> SpeechStage.IDLE
@@ -207,8 +256,7 @@ $context"""
             else -> SpeechStage.LOADING
         }, reason)
     }
-    private fun fail(message: String) {
-        val failedStage = stage.name.lowercase()
+    private fun fail(message: String, failedStage: String = stage.name.lowercase()) {
         currentRecord?.put("outcome", "failed")?.put("failure_stage", failedStage)
         currentRecord = null
         cancel(message)

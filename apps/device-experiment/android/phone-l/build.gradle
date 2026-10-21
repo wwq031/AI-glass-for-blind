@@ -15,8 +15,8 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode speechEnabled ? 6 : gemmaEnabled ? 6 : 3
-        versionName speechEnabled ? '0.4.1' : gemmaEnabled ? '0.3.1' : '0.2.1'
+        versionCode speechEnabled ? 7 : gemmaEnabled ? 6 : 3
+        versionName speechEnabled ? '0.4.2' : gemmaEnabled ? '0.3.1' : '0.2.1'
         buildConfigField 'boolean', 'GEMMA_ENABLED', gemmaEnabled.toString()
         buildConfigField 'boolean', 'SPEECH_ENABLED', speechEnabled.toString()
         ndk { abiFilters 'arm64-v8a' }
