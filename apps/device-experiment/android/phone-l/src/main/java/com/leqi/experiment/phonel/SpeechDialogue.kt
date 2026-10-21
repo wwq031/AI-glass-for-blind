@@ -90,6 +90,7 @@ internal class SpeechDialogue(
     private fun beginRecord(kind: String) {
         currentRecord = JSONObject().put("request_id", java.util.UUID.randomUUID().toString())
             .put("kind", kind).put("input", if (kind == "dialogue") "phone_microphone" else "text").put("outcome", "pending")
+            .put("tts_threads", engines?.ttsThreads ?: 0)
             .put("timestamps_ms", JSONObject())
         if (records.size == 100) records.removeFirst()
         records.addLast(currentRecord!!)

@@ -17,6 +17,7 @@ internal data class SpeechAudio(val samples: FloatArray, val sampleRate: Int) {
 }
 
 internal interface SpeechEngines : AutoCloseable {
+    val ttsThreads: Int get() = 2
     fun initialize()
     fun transcribe(samples: FloatArray): String
     fun synthesize(text: String): SpeechAudio
@@ -67,10 +68,12 @@ internal object SpeechAssets {
 }
 
 /** CPU ASR and TTS only. No network, no recognition text in logs, fresh ASR stream. */
-internal class SherpaSpeechEngines(private val root: File) : SpeechEngines {
+internal class SherpaSpeechEngines(private val root: File,
+    override val ttsThreads: Int = Runtime.getRuntime().availableProcessors().coerceIn(1, 4)) : SpeechEngines {
     private var recognizer: OfflineRecognizer? = null
     private var tts: OfflineTts? = null
     override fun initialize() {
+        require(ttsThreads in 1..4)
         check(recognizer == null && tts == null)
         try {
             recognizer = OfflineRecognizer(null, OfflineRecognizerConfig(modelConfig = OfflineModelConfig(
@@ -81,7 +84,7 @@ internal class SherpaSpeechEngines(private val root: File) : SpeechEngines {
             tts = OfflineTts(null, OfflineTtsConfig(model = OfflineTtsModelConfig(vits = OfflineTtsVitsModelConfig(
                 model = File(model, "model.int8.onnx").absolutePath,
                 lexicon = File(model, "lexicon.txt").absolutePath, tokens = File(model, "tokens.txt").absolutePath,
-                dictDir = File(model, "dict").absolutePath), numThreads = 2, provider = "cpu", debug = false),
+                dictDir = File(model, "dict").absolutePath), numThreads = ttsThreads, provider = "cpu", debug = false),
                 ruleFsts = listOf("date.fst", "number.fst", "phone.fst").joinToString(",") { File(model, it).absolutePath },
                 maxNumSentences = 1))
             check(tts!!.sampleRate() in 8000..48000 && tts!!.numSpeakers() > 0)
