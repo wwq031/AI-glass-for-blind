@@ -4,6 +4,13 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <uses-feature android:glEsVersion="0x00030001" android:required="false"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_LOCATION"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <queries>
         <package android:name="com.rokid.sprite.aiapp"/>
         <package android:name="com.rokid.sprite.global.aiapp"/>
@@ -15,7 +22,10 @@
     <application android:allowBackup="false" android:label="乐奇双端实验·CXR-L" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <uses-native-library android:name="libOpenCL.so" android:required="false"/>
         <uses-native-library android:name="libvndksupport.so" android:required="false"/>
-        <activity android:name=".PhoneLActivity" android:exported="true">
+        <meta-data android:name="com.amap.api.v2.apikey" android:value="${amapAndroidKey}"/>
+        <service android:name=".CxrlAgentService" android:exported="false" android:foregroundServiceType="connectedDevice|location"/>
+        <activity android:name=".PhoneLActivity" android:exported="false"/>
+        <activity android:name=".CxrlAgentActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
