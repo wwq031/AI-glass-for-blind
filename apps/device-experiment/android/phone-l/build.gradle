@@ -172,7 +172,7 @@ tasks.register('syncAgentPorts', Sync) {
 tasks.named('preBuild').configure { dependsOn 'syncAgentPorts' }
 
 // 从已经校验的交付 APK 流式提取模型，避免把权重或生成文件放进 Git。
-def modelAssets = layout.buildDirectory.dir('generated/modelAssets')
+def modelAssets = layout.buildDirectory.dir('generated/runtimeModelAssets')
 android.sourceSets.main.assets.srcDir(modelAssets)
 tasks.register('prepareRuntimeAssets') {
     def codeOnly = providers.gradleProperty('cxrlCodeOnly').map { it.toBoolean() }.getOrElse(gemmaCodeOnly)
@@ -203,7 +203,8 @@ tasks.register('prepareRuntimeAssets') {
         if (digest.digest().encodeHex().toString() != expected.apk_sha256)
             throw new GradleException('Model APK checksum mismatch')
         copy {
-            from(zipTree(apk)) { include 'assets/gemma/**', 'assets/speech/**', 'assets/licenses/**' }
+            // 许可文件沿用主分支的 src/main/assets/licenses，避免同名资源重复。
+            from(zipTree(apk)) { include 'assets/gemma/**', 'assets/speech/**' }
             into modelAssets
             eachFile { details -> details.path = details.path.substring('assets/'.length()) }
             includeEmptyDirs = false

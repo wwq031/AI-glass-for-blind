@@ -34,7 +34,7 @@
 node tools/build-cxrl-agent.mjs
 ```
 
-默认从 `工作区/phone-l-speech-v0.4.2.apk` 提取 Gemma、SenseVoice、MeloTTS 与许可资源，先根据 `工作区/manifest-v0.4.2.json` 核验整个源 APK 大小和 SHA-256。资源只进入 `build/generated/modelAssets`，不进入源码目录。运行时仍逐项核验模型文件。指定其他来源：
+默认从 `工作区/phone-l-speech-v0.4.2.apk` 提取 Gemma、SenseVoice、MeloTTS，先根据 `工作区/manifest-v0.4.2.json` 核验整个源 APK 大小和 SHA-256。资源只进入 `build/generated/runtimeModelAssets`，不进入源码目录；许可文件沿用主分支已有资源。运行时仍逐项核验模型文件。指定其他来源：
 
 ```powershell
 node tools/build-cxrl-agent.mjs --model-apk <已验证APK路径> --model-manifest <对应清单路径>
@@ -52,13 +52,13 @@ node tools/build-cxrl-agent.mjs --model-apk <已验证APK路径> --model-manifes
 - `GlassesActivity`：按键授权窗口、播放校验、真实播放回执。订阅 `rk_custom_client`，回复 `rk_custom_key`，依据官方 CXR-L 1.1.2 Sample 的 CUSTOM_APP 通道约定。
 - `CxrlInputGate`：互斥、一次消费、过期和撤销的设备授权窗口，不保存业务会话。
 - `build-mobile-agent.mjs --outdir`：从同一份 TypeScript 源码构建两个宿主的 Agent，不维护两份业务副本。
-- Gemma 模型端口、`BundledModel`、`SpeechModels` 复用上游 `b9cbdada9e09485df287797e152ed9c59b146822` 的实现；本次接线是尚未提交的本地修改，`SOURCE_REVISION` 是基础提交号，不代表这些新增文件已存在于该提交。
+- Gemma 模型端口、`BundledModel`、`SpeechModels` 复用上游 `b9cbdada9e09485df287797e152ed9c59b146822` 的实现；集成提交已基于该主分支整理。发布包源码归属以 Release 清单的 `source_revision` 为准；本地未提交改动不应仅用基础提交号代表。
 
 眼镜上行音频目前按 CXR-L 16kHz、单声道、16bit PCM 接入；必须在目标官方 App/固件上核对实际音频格式和连续两轮回收。停止麦克风必须等待停止回执；超时关闭连接。相机没有请求 ID，拍照超时或处理中撤销均关闭连接，拒绝把旧图片归入下一次确认。
 
 ## 自动化与真机验收
 
-本轮检查结果：根目录 189 项 Node 测试通过，TypeScript 类型检查及 33 个 Schema / 10 个示例 / 5 个能力 / 8 个 Skill / 7 个工具的协议校验通过。手机端 29 项 Android 单元测试通过，眼镜端运行同一组 4 项授权窗口测试通过。双端完整 APK 构建通过。完整手机 APK 内 2,588,147,712 字节的 Gemma 权重，以及 19 个语音资源文件均逐项校验通过；Agent JS 及 HTML 入口已实际进入 APK。
+上传前基于最新主分支复检：根目录 190 项 Node 测试通过，TypeScript 类型检查及 33 个 Schema / 10 个示例 / 5 个能力 / 8 个 Skill / 7 个工具的协议校验通过。手机端 71 项 Android 单元测试通过，眼镜端运行同一组 4 项授权窗口测试通过。双端完整 APK 构建通过。完整手机 APK 内 2,588,147,712 字节的 Gemma 权重，以及 19 个语音资源文件均逐项校验通过；Agent JS 及 HTML 入口已实际进入 APK。
 
 构建脚本执行手机与眼镜单元测试及双端 APK 构建；根目录另执行：
 
