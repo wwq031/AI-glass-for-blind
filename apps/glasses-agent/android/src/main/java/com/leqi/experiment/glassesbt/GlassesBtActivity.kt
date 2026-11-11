@@ -146,6 +146,13 @@ class GlassesBtActivity : Activity() {
         keys.addAction(BUTTON_LONG_PRESS)
         keys.addAction(DEBUG_PROBE)
         registerReceiver(keyReceiver, keys)
+        // 本地输入诊断无需连接手机，跳过权限窗口，并在前台采样期间保持亮屏。
+        val debug = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (debug && intent.getBooleanExtra("rgr06InputOnly", false)) {
+            window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            show("RGR06 本地输入诊断，等待戒指操作")
+            return
+        }
         if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
             requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_CONNECT), 1)
         } else {
@@ -319,6 +326,35 @@ class GlassesBtActivity : Activity() {
                 if (!stopped) show("眼镜直连服务失败：" + error.message)
             }
         }
+    }
+
+    /**
+     * Passive RGR06 diagnostics, before focused views can consume ENTER/DPAD/BACK.
+     * Linux getevent codes are not Android KeyEvent codes. Never authorize capture
+     * from this trace or from the ambiguous F1 prefix. Device names are diagnostic
+     * hints, not a trusted identity or permission to operate the application.
+     */
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val name = event.device?.name
+        val debug = applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
+        if (debug && name in setOf("RGR06", "RGR06 Keyboard", "RGR06 Consumer Control")) {
+            // SDK 未公开 actionToString，按公开常量显示动作并保留原始值。
+            val action = when (event.action) {
+                KeyEvent.ACTION_DOWN -> "ACTION_DOWN"
+                KeyEvent.ACTION_UP -> "ACTION_UP"
+                KeyEvent.ACTION_MULTIPLE -> "ACTION_MULTIPLE"
+                else -> event.action.toString()
+            }
+            Log.d("Rgr06Input", "device=$name deviceId=${event.deviceId} source=${event.source}" +
+                " action=$action actionCode=${event.action}" +
+                " keyCode=${event.keyCode} key=${KeyEvent.keyCodeToString(event.keyCode)}" +
+                " scanCode=${event.scanCode} repeat=${event.repeatCount}" +
+                " downTime=${event.downTime} eventTime=${event.eventTime}" +
+                " heldMs=${(event.eventTime - event.downTime).coerceAtLeast(0L)}" +
+                " canceled=${event.isCanceled}")
+        }
+        // Preserve normal dispatch and existing onKeyUp probe behavior.
+        return super.dispatchKeyEvent(event)
     }
 
     override fun onKeyUp(keyCode: Int, event: KeyEvent): Boolean {

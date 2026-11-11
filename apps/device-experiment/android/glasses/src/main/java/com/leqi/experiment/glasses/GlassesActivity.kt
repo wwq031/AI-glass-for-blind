@@ -7,6 +7,7 @@ import android.os.*
 import android.view.KeyEvent
 import android.widget.TextView
 import android.util.Base64
+import android.util.Log
 import com.leqi.experiment.CxrlInputGate
 import com.rokid.cxr.CXRServiceBridge
 import com.rokid.cxr.Caps
@@ -31,8 +32,13 @@ class GlassesActivity : Activity() {
     private val playbackLock = Any()
     private var playing = false
     private var lastClick = -1000L
+    private var diagnosticOnly = false
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            if (diagnosticOnly) {
+                event("rgr06.broadcast", intent.action ?: "")
+                return
+            }
             when (intent.action) {
                 "com.android.action.ACTION_SPRITE_BUTTON_CLICK" -> click()
                 "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS" -> cancelFromUser()
@@ -63,10 +69,19 @@ class GlassesActivity : Activity() {
         val type = packet.optString("type")
         val payload = packet.optString("payload")
         if (type == "link.bind") {
+            diagnosticOnly = false
             reset(); link = payload; sequence = 0
             event("link.ready"); text.text = "已连接，等待手机模型就绪"; return
         }
         if (link.isBlank() || packet.optString("link") != link) return
+        // 诊断握手只在 debug 包中启用；关闭授权窗口后，仅上报原始输入。
+        if (type == "rgr06.diagnostics" && applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            reset(); diagnosticOnly = true
+            text.text = "RGR06 跨端输入诊断，等待戒指操作"
+            event("rgr06.ready")
+            return
+        }
+        if (diagnosticOnly) return
         when (type) {
             "voice.arm", "voice.disarm", "entrance.arm", "entrance.disarm" -> {
                 gate.arm(type, payload, SystemClock.elapsedRealtime())
@@ -108,6 +123,7 @@ class GlassesActivity : Activity() {
         }
     }
     private fun click() {
+        if (diagnosticOnly) return
         val now = SystemClock.elapsedRealtime()
         if (link.isBlank() || now - lastClick < 300) return
         lastClick = now
@@ -120,7 +136,8 @@ class GlassesActivity : Activity() {
     private fun event(type: String, payload: String = "") {
         if (link.isBlank()) return
         val json = JSONObject().put("link", link).put("sequence", ++sequence).put("type", type).put("payload", payload).toString()
-        bridge.sendMessage("rk_custom_key", Caps().apply { write(json) }, json.toByteArray())
+        val sent = bridge.sendMessage("rk_custom_key", Caps().apply { write(json) }, json.toByteArray())
+        if (diagnosticOnly) Log.d("Rgr06Cxrl", "tx sequence=$sequence type=$type result=$sent")
     }
     private fun play(id: String, pcm: ByteArray, rate: Int) {
         val attempt = generation
@@ -152,17 +169,33 @@ class GlassesActivity : Activity() {
         gate.cancel(); recording = false; playback = null; header = null; playing = false
         synchronized(playbackLock) { generation++; runCatching { track?.pause() }; track = null }
     }
+    override fun dispatchKeyEvent(event: KeyEvent): Boolean {
+        val name = event.device?.name
+        if (diagnosticOnly && name in setOf("RGR06", "RGR06 Keyboard", "RGR06 Consumer Control")) {
+            val trace = "device=$name deviceId=${event.deviceId} source=${event.source}" +
+                " action=${event.action} keyCode=${event.keyCode} key=${KeyEvent.keyCodeToString(event.keyCode)}" +
+                " scanCode=${event.scanCode} repeat=${event.repeatCount}" +
+                " downTime=${event.downTime} eventTime=${event.eventTime}" +
+                " heldMs=${event.eventTime - event.downTime} canceled=${event.isCanceled}"
+            Log.d("Rgr06Input", trace)
+            event("rgr06.input", trace)
+        }
+        return super.dispatchKeyEvent(event)
+    }
     override fun onKeyDown(code: Int, event: KeyEvent): Boolean {
+        if (diagnosticOnly) return super.onKeyDown(code, event)
         if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
             event.startTracking(); return true
         }
         return super.onKeyDown(code, event)
     }
     override fun onKeyLongPress(code: Int, event: KeyEvent): Boolean {
+        if (diagnosticOnly) return super.onKeyLongPress(code, event)
         if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) { cancelFromUser(); return true }
         return super.onKeyLongPress(code, event)
     }
     override fun onKeyUp(code: Int, event: KeyEvent): Boolean {
+        if (diagnosticOnly) return super.onKeyUp(code, event)
         if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
             if (!event.isCanceled) click(); return true
         }
