@@ -10,7 +10,13 @@ internal object SpeechChunks {
         while (start < points.size) {
             val limit = if (result.isEmpty()) 16 else 40
             var end = minOf(points.size, start + limit)
-            if (end < points.size) {
+            // 首句遇到完整句末立即交付；“我在。”无需等后面的介绍一起合成。
+            val firstSentence = if (result.isEmpty()) (start until end).firstOrNull {
+                points[it] in "。！？!?\n".map(Char::code) &&
+                    (start until it).any { index -> Character.isLetterOrDigit(points[index]) }
+            } else null
+            if (firstSentence != null) end = firstSentence + 1
+            else if (end < points.size) {
                 val punctuation = (end - 1 downTo start + 5).firstOrNull { index ->
                     points[index] in "，。！？；、,!?;\n".map(Char::code)
                 }

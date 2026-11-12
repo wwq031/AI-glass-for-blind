@@ -7,9 +7,17 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.text.InputType
 import android.util.Log
+import android.view.WindowManager
 import android.widget.Button
+import android.widget.CheckBox
+import android.widget.EditText
 import android.widget.LinearLayout
+import android.widget.RadioButton
+import android.widget.RadioGroup
+import android.widget.ScrollView
+import android.widget.Switch
 import android.widget.TextView
 import com.leqi.experiment.phonebt.AmapPrivacy
 import com.rokid.cxr.session.*
@@ -21,28 +29,88 @@ class CxrlAgentActivity : Activity() {
     private var requesting = false
     private var destroyed = false
     private var diagnosticMode = false
+    private var textDiagnostics = false
     private var diagnosticDevice: CxrlAgentDevice? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         manager = CxrSessionManager.getInstance(applicationContext)
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24) }
-        status = TextView(this).apply { textSize = 20f; text = "乐奇助盲\n首次连接后，在眼镜短按开始；长按取消。录音中再短按结束。" }
+        status = TextView(this).apply { textSize = 20f; text = "乐奇助盲\n首次连接后，在眼镜短按开始。录音中再短按结束。结束任务请在手机点停止任务与连接。" }
         layout.addView(status)
         fun button(title: String, action: () -> Unit) {
             layout.addView(Button(this).apply { text = title; setOnClickListener { action() } })
         }
         button("授权并连接眼镜") { connect() }
+        button("对话模型与费用设置") { modelSettings() }
         button("停止任务与连接") {
             requesting = false
             diagnosticDevice?.close(); diagnosticDevice = null
             stopService(Intent(this, CxrlAgentService::class.java)); status.text = "已停止；再次连接不会恢复旧任务"
         }
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            layout.addView(CheckBox(this).apply {
+                text = "下次连接记录识别与播报文字（诊断用）"
+                isSaveEnabled = false
+                setOnCheckedChangeListener { _, checked -> textDiagnostics = checked }
+            })
             button("戒指输入诊断（只记录）") { connect(diagnostics = true) }
         }
         button("查看连接诊断") { startActivity(Intent(this, PhoneLActivity::class.java)) }
         setContentView(layout)
+    }
+
+    private fun modelSettings() {
+        val settings = AgentModelSettings(this)
+        val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 16, 32, 16) }
+        content.addView(TextView(this).apply {
+            text = "免费模式：对话、识别、播报和看图均在手机运行。\nDeepSeek 模式：手机直接联网，无需电脑或服务器；按用量收费。将发送对话文字、历史及必要任务上下文（包括识别结果、导航候选），录音和照片在本机处理。\n应用已收到的累计用量：${settings.totalTokens} tokens；费用以 DeepSeek 账单为准。"
+        })
+        val enabled = Switch(this).apply { text = "开启 DeepSeek 对话（按用量收费）"; isChecked = settings.cloudEnabled }
+        content.addView(enabled)
+        val models = RadioGroup(this)
+        models.addView(RadioButton(this).apply { id = 101; text = "Flash：费用较低，默认推荐" })
+        models.addView(RadioButton(this).apply { id = 102; text = "Pro：更强推理，费用较高" })
+        models.check(if (settings.model == AgentModelSettings.PRO) 102 else 101)
+        content.addView(models)
+        val key = EditText(this).apply {
+            hint = if (settings.hasKey) "已保存密钥；留空保留，输入则替换" else "在这里填写你的 DeepSeek API Key"
+            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
+            setSingleLine(true)
+            importantForAutofill = android.view.View.IMPORTANT_FOR_AUTOFILL_NO
+            isSaveEnabled = false
+        }
+        content.addView(key)
+        val feedback = TextView(this)
+        content.addView(feedback)
+        val dialog = AlertDialog.Builder(this).setTitle("对话模型与费用")
+            .setView(ScrollView(this).apply { addView(content) })
+            .setPositiveButton("保存", null).setNegativeButton("取消", null)
+            .setNeutralButton("清除密钥", null).create()
+        dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
+        dialog.setOnShowListener {
+            dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
+                if (enabled.isChecked && key.text.isNullOrBlank() && !settings.hasKey) {
+                    feedback.text = "请先填写 API Key，或关闭 DeepSeek 使用免费模式"; return@setOnClickListener
+                }
+                val saved = runCatching { settings.save(enabled.isChecked,
+                    if (models.checkedRadioButtonId == 102) AgentModelSettings.PRO else AgentModelSettings.FLASH,
+                    key.text.toString()) }
+                if (saved.isFailure) { feedback.text = "保存失败，请检查密钥是否包含空格，或清除旧密钥后重新填写"; return@setOnClickListener }
+                stopService(Intent(this, CxrlAgentService::class.java))
+                status.text = "设置已保存，请点击授权并连接眼镜。当前对话：${if (enabled.isChecked) "DeepSeek" else "免费本地模型"}"
+                key.text.clear(); dialog.dismiss()
+            }
+            dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
+                runCatching { settings.clearKey() }.fold({
+                    stopService(Intent(this, CxrlAgentService::class.java))
+                    key.text.clear(); enabled.isChecked = false
+                    feedback.text = "密钥已清除，已切回免费模式；关闭此窗口后重新连接眼镜"
+                    status.text = "已切回免费模式，请重新连接眼镜"
+                }, { feedback.text = "密钥清除失败，请重试" })
+            }
+        }
+        dialog.show()
     }
 
     private fun connect(diagnostics: Boolean = false) {
@@ -89,8 +157,9 @@ class CxrlAgentActivity : Activity() {
         if (token == null) { status.text = "授权未完成，请重试"; return }
         if (diagnosticMode) { startInputDiagnostics(token); return }
         // Token 只在内存中的启动信封传递，不保存、不记录。
-        startForegroundService(Intent(this, CxrlAgentService::class.java).putExtra("token", token))
-        status.text = "正在准备本地模型和眼镜连接，进度见通知。\n眼镜提示就绪后：短按开始，提示后短按录音，再短按结束；长按取消。"
+        startForegroundService(Intent(this, CxrlAgentService::class.java).putExtra("token", token)
+            .putExtra("textDiagnostics", textDiagnostics))
+        status.text = "正在准备本地模型和眼镜连接，进度见通知。\n眼镜提示就绪后：短按开始，提示后短按录音，再短按结束。结束任务请在手机点停止任务与连接。"
     }
     /** 诊断连接由页面持有，原始输入只写日志；不启动模型和业务服务。 */
     private fun startInputDiagnostics(token: String) {

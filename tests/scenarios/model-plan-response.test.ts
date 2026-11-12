@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { generateValidatedPlan, parseModelPlanResponse } from "../../apps/phone-companion/src/android/model-plan-response.ts";
+import { generateValidatedPlan, parseModelPlanResponse, modelFailureSpeech } from "../../apps/phone-companion/src/android/model-plan-response.ts";
 
 const validPlan = {
   schema_version: "1.0",
@@ -68,4 +68,28 @@ test("runtime metadata does not make a missing action valid", async () => {
     planId: "model-event-1", sessionId: "session-1", eventId: "event-1",
     createdAt: "2026-09-30T04:00:00.000Z",
   }), /actions/);
+});
+
+test("reproduced invalid priority stays rejected after one repair", async () => {
+  let calls = 0;
+  await assert.rejects(generateValidatedPlan("prompt", async () => {
+    calls++;
+    return JSON.stringify({ ...validPlan, actions: [{ kind: "speak", text: "你好", priority: "medium" }] });
+  }), /priority is invalid/);
+  assert.equal(calls, 2);
+  assert.match(modelFailureSpeech(new TypeError("plan.actions[0].priority is invalid")), /模型/);
+  assert.doesNotMatch(modelFailureSpeech(new TypeError("plan.actions[0].priority is invalid")), /没听明白/);
+});
+
+test("cloud request failures do not trigger a paid repair request", async () => {
+  let calls = 0;
+  await assert.rejects(generateValidatedPlan("prompt", async () => {
+    calls++; throw new Error("cloud_auth");
+  }), /cloud_auth/);
+  assert.equal(calls, 1);
+  for (const [code, expected] of [["cloud_auth", "密钥"], ["cloud_balance", "余额"],
+    ["cloud_busy", "繁忙"], ["cloud_network", "网络"], ["cloud_timeout", "超时"], ["cloud_format", "格式"]]) {
+    assert.ok(modelFailureSpeech(new Error(code)).includes(expected!));
+  }
+  assert.doesNotMatch(modelFailureSpeech(new Error("private server response")), /private server response/);
 });

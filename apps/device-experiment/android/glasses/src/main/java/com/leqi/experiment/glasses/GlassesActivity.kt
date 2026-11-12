@@ -33,6 +33,10 @@ class GlassesActivity : Activity() {
     private var playing = false
     private var lastClick = -1000L
     private var diagnosticOnly = false
+    private fun audioDiagnostic(stage: String, detail: String) {
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+            Log.d("LeqiAudioDiag", "$stage $detail")
+    }
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (diagnosticOnly) {
@@ -102,6 +106,7 @@ class GlassesActivity : Activity() {
                 val value = JSONObject(payload)
                 require(value.getInt("bytes") in 2..8640000 && value.getInt("bytes") % 2 == 0)
                 require(value.getInt("rate") in 8000..48000)
+                audioDiagnostic("rx.start", "playId=${value.getString("id")} bytes=${value.getInt("bytes")} rate=${value.getInt("rate")}")
                 header = value; playback = ByteArrayOutputStream()
             }
             "play.chunk" -> {
@@ -113,6 +118,7 @@ class GlassesActivity : Activity() {
             "play.end" -> {
                 val value = header ?: return
                 val bytes = playback?.toByteArray() ?: return
+                audioDiagnostic("rx.complete", "playId=$payload bytes=${bytes.size}")
                 playback = null; header = null
                 if (value.getString("id") != payload || value.getInt("bytes") != bytes.size ||
                     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it.toInt() and 255) } != value.getString("sha256")) {
@@ -153,12 +159,14 @@ class GlassesActivity : Activity() {
                 check(created.write(pcm, 0, pcm.size) == pcm.size)
                 check(created.state == AudioTrack.STATE_INITIALIZED && attempt == generation)
                 created.play()
+                audioDiagnostic("play.start", "playId=$id rate=$rate frames=${pcm.size / 2}")
                 val deadline = SystemClock.elapsedRealtime() + pcm.size * 1000L / (rate * 2) + 3000
                 while (attempt == generation && created.playbackHeadPosition < pcm.size / 2 && SystemClock.elapsedRealtime() < deadline)
                     Thread.sleep(20)
                 check(attempt == generation && created.playbackHeadPosition >= pcm.size / 2)
             }
             runCatching { player?.stop() }; runCatching { player?.release() }
+            audioDiagnostic("play.complete", "playId=$id success=${outcome.isSuccess}")
             synchronized(playbackLock) { if (track === player) track = null }
             main.post {
                 if (attempt == generation) { playing = false; event(if (outcome.isSuccess) "play.done" else "play.failed", id) }

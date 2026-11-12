@@ -6,6 +6,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.*
 import android.util.Base64
+import android.util.Log
 import com.leqi.experiment.phonebt.*
 import com.rokid.cxr.session.*
 import org.json.JSONArray
@@ -27,7 +28,10 @@ class CxrlAgentService : Service() {
     private lateinit var device: CxrlAgentDevice
     private lateinit var navigation: AgentNavigationDevice
     private var model: GemmaLocalBridge? = null
+    private var cloud: DeepSeekClient? = null
+    private var utterance: CxrlSpeechPlayback? = null
     private var speech: SpeechEngines? = null
+    private val speechCache = SpeechAudioCache()
     @Volatile private var modelsReady = false
     private var counter = 0L
     private val media = LinkedHashMap<String, ByteArray>()
@@ -42,6 +46,34 @@ class CxrlAgentService : Service() {
     private var photoSession: CxrSession? = null
     private var route: String? = null
     private var startingRoute: String? = null
+    private val textTrace by lazy {
+        SpeechTextDiagnostics(applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
+            Log.d("LeqiSpeechText", it)
+        }
+    }
+
+    // 只在调试包记录阶段、耗时和错误；不记录语音原文、音频或图片。
+    private fun diagnostic(stage: String, detail: String) {
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
+            Log.d("LeqiAgentDiag", "$stage $detail")
+    }
+
+    /** 只记录动作种类与工具名，区分“口头提示”和“真正调用”；不记录对话或模型全文。 */
+    private fun diagnosticPlan(id: String, raw: String) {
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE == 0) return
+        val actions = runCatching { JSONObject(raw).getJSONArray("actions") }.getOrNull()
+        if (actions == null) { diagnostic("model.plan", "id=$id parsed=false"); return }
+        val summary = JSONArray()
+        for (index in 0 until minOf(actions.length(), 4)) {
+            val action = actions.optJSONObject(index) ?: continue
+            val args = action.optJSONObject("arguments")
+            summary.put(JSONObject().put("kind", action.optString("kind"))
+                .put("tool", action.optString("tool_id"))
+                .put("capability", args?.optJSONObject("parameters")?.optString("capability_id")
+                    ?: args?.optString("capability_id") ?: ""))
+        }
+        diagnostic("model.plan", "id=$id actions=$summary")
+    }
 
     override fun onBind(intent: Intent?) = null
     override fun onCreate() {
@@ -62,27 +94,50 @@ class CxrlAgentService : Service() {
         }
         worker.execute {
             val outcome = runCatching {
-                val file = BundledModel.prepare(this, { closed }) { percent -> status("模型准备 $percent%") }
-                val local = GemmaLocalBridge(file, File(cacheDir, "gemma-agent"), gpu = true)
-                model = local; local.initialize(); local.verifyVisionReady()
+                val settings = AgentModelSettings(this)
+                if (settings.cloudEnabled) {
+                    val key = try { settings.apiKey() } catch (_: Exception) {
+                        throw ModelServiceException("cloud_key_unreadable")
+                    }
+                    check(key.isNotBlank())
+                    cloud = DeepSeekClient(key, settings.model, usage = settings::recordUsage)
+                } else localModel()
                 val engines = SherpaSpeechEngines(SpeechAssets.prepare(this) { closed })
                 speech = engines; engines.initialize()
             }
             main.post {
                 if (!closed) {
                     modelsReady = outcome.isSuccess
-                    if (device.ready) device.command("status", if (modelsReady) "准备好了，短按开始；长按取消" else "模型准备失败，请在手机检查")
-                    status(if (modelsReady) "模型已就绪；连接后在眼镜按键开始"
+                    if (device.ready) device.command("status", if (modelsReady) "准备好了，短按开始；结束请在手机点停止任务与连接" else "模型准备失败，请在手机检查")
+                    status(if (modelsReady) "${if (cloud == null) "免费本地模型" else "DeepSeek 对话、本地语音"}已就绪；连接后按键开始"
+                        else if (outcome.exceptionOrNull() is ModelServiceException) "密钥读取失败，请在对话模型设置中重新填写"
                         else "本地模型准备失败：${outcome.exceptionOrNull()!!.javaClass.simpleName}")
                 }
             }
         }
     }
 
+    /** 云端对话不等待 Gemma 加载；首次看图时才准备本地视觉模型。仅 worker 调用。 */
+    private fun localModel(): GemmaLocalBridge {
+        model?.let { return it }
+        val file = BundledModel.prepare(this, { closed }) { percent -> status("本地模型准备 $percent%") }
+        val local = GemmaLocalBridge(file, File(cacheDir, "gemma-agent"), gpu = true)
+        try { local.initialize(); local.verifyVisionReady() }
+        catch (error: Exception) { local.close(); throw error }
+        model = local
+        return local
+    }
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null || intent.action == "stop") { stopSelf(); return START_NOT_STICKY }
         val token = intent.getStringExtra("token")
-        if (!token.isNullOrBlank()) { retire(); device.connect(token) }
+        if (!token.isNullOrBlank()) {
+            textTrace.enabled = intent.getBooleanExtra("textDiagnostics", false)
+            retire()
+            // 替换连接时同步撤销 Agent 的旧会话，避免旧拍照窗口继续吞掉新按键。
+            envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", "重新连接"))
+            device.connect(token)
+        }
         return START_NOT_STICKY
     }
 
@@ -111,7 +166,7 @@ class CxrlAgentService : Service() {
             val result = runCatching { check(modelsReady) { "模型尚未就绪" }; action() }
             main.post {
                 if (!closed && attempt == generation) result.fold({ reply(id, it) },
-                    { reply(id, error = "原生操作失败：${it.javaClass.simpleName}") })
+                    { reply(id, error = (it as? ModelServiceException)?.code ?: "原生操作失败：${it.javaClass.simpleName}") })
             }
         }
     }
@@ -122,12 +177,18 @@ class CxrlAgentService : Service() {
         try {
             when (message.optString("type")) {
                 "ready" -> status("Agent 已加载；正在等待模型和眼镜就绪")
-                "model.generate" -> compute(id) {
-                    model!!.generateText(payload.getString("prompt"), payload.getString("sessionId"))
+                "model.generate" -> {
+                    val attempt = generation
+                    compute(id) {
+                        val response = cloud?.generate(payload.getString("prompt")) { closed || attempt != generation }
+                            ?: localModel().generateText(payload.getString("prompt"), payload.getString("sessionId"))
+                        diagnosticPlan(id, response)
+                        response
+                    }
                 }
                 "vision.observe" -> {
                     val bytes = media.remove(payload.getString("mediaRef")) ?: error("照片已过期或已使用")
-                    compute(id) { model!!.generateVision(bytes, payload.getString("prompt")) }
+                    compute(id) { localModel().generateVision(bytes, payload.getString("prompt")) }
                 }
                 "speech.say" -> say(payload.getString("text")) { ok ->
                     if (ok) reply(id, JSONObject().put("finished", true)) else reply(id, error = "眼镜播报未完成")
@@ -141,8 +202,12 @@ class CxrlAgentService : Service() {
                     startingRoute?.let { reply(it, error = "导航在开始前被取消") }; startingRoute = null
                     navigation.stopWalking { stopped -> reply(id, JSONObject().put("stopped", stopped)) }
                 }
-                "error" -> status("Agent 返回错误；可在眼镜长按取消并重新开始")
-                "effect", "event.result" -> Unit // speech.say 已统一负责真实播放，Effect 不重复播报。
+                "error" -> {
+                    diagnostic("agent.error", "id=$id detail=${message.optString("error")}")
+                    status("本轮模型请求失败，眼镜将说明原因；可检查网络或对话模型设置")
+                }
+                "event.result" -> diagnostic("event.result", "id=$id rejection=${payload.optJSONObject("rejection")?.optString("code")} tools=${payload.optJSONArray("toolResults")}")
+                "effect" -> Unit // speech.say 已统一负责真实播放，Effect 不重复播报。
                 else -> reply(id, error = "不支持的原生请求")
             }
         } catch (error: Exception) { reply(id, error = "请求失败：${error.javaClass.simpleName}") }
@@ -173,10 +238,13 @@ class CxrlAgentService : Service() {
         when (type) {
             "link.ready" -> {
                 status("眼镜已握手；模型就绪后可按键开始")
-                device.command("status", if (modelsReady) "准备好了，短按开始；长按取消" else "模型正在准备，请稍候")
+                device.command("status", if (modelsReady) "准备好了，短按开始；结束请在手机点停止任务与连接" else "模型正在准备，请稍候")
                 return
             }
-            "play.done", "play.failed" -> { plays.remove(tag)?.second?.invoke(type == "play.done"); return }
+            "play.done", "play.failed" -> {
+                diagnostic(type, "playId=$tag")
+                plays.remove(tag)?.second?.invoke(type == "play.done"); return
+            }
             "user.cancel" -> retire()
             "probe.glasses" -> if (!modelsReady) {
                 device.command("status", "模型尚未就绪，请稍候"); return
@@ -260,7 +328,10 @@ class CxrlAgentService : Service() {
             main.post {
                 if (!closed && attempt == generation) {
                     val payload = JSONObject().put("purpose", tag)
-                    result.onSuccess { payload.put("transcript", it) }
+                    result.onSuccess {
+                        textTrace.record("asr", "cxrl-${counter + 1}", it)
+                        payload.put("transcript", it)
+                    }
                     envelope("native.speech", payload)
                 }
             }
@@ -310,44 +381,75 @@ class CxrlAgentService : Service() {
     }
 
     private fun say(text: String, completed: (Boolean) -> Unit) {
-        if (!device.ready || !modelsReady) { completed(false); return }
+        if (!device.ready || !modelsReady || utterance != null) { completed(false); return }
         val attempt = generation
-        val playId = UUID.randomUUID().toString()
-        computeSpeech(text, attempt) { audio ->
-            if (audio == null) { completed(false); return@computeSpeech }
-            plays[playId] = Pair(attempt, completed)
-            val pcm = ByteArray(audio.samples.size * 2)
-            audio.samples.forEachIndexed { index, value ->
-                val n = (value * 32767f).toInt().coerceIn(-32768, 32767)
-                pcm[index * 2] = n.toByte(); pcm[index * 2 + 1] = (n shr 8).toByte()
-            }
-            val hash = MessageDigest.getInstance("SHA-256").digest(pcm).joinToString("") { "%02x".format(it.toInt() and 255) }
-            val header = JSONObject().put("id", playId).put("bytes", pcm.size).put("rate", audio.sampleRate).put("sha256", hash)
-            fun failed() { plays.remove(playId)?.second?.invoke(false) }
-            device.command("play.start", header.toString()) { result ->
-                if (result.isFailure) failed() else {
-                    // 逐块等待 SDK 接受再发送下一块，避免无限堆积原生队列。
-                    fun sendChunk(offset: Int) {
-                        if (attempt != generation || !plays.containsKey(playId)) return
-                        if (offset == pcm.size) {
-                            device.command("play.end", playId) { if (it.isFailure) failed() }
-                            return
-                        }
-                        val count = minOf(3000, pcm.size - offset)
-                        device.command("play.chunk", Base64.encodeToString(pcm, offset, count, Base64.NO_WRAP)) {
-                            if (it.isFailure) failed() else sendChunk(offset + count)
-                        }
-                    }
-                    sendChunk(0)
+        val speechId = UUID.randomUUID().toString()
+        textTrace.record("speech", speechId, text)
+        diagnostic("speech.request", "playId=$speechId chars=${text.length}")
+        val pipeline = CxrlSpeechPlayback(
+            synthesize = { part, done -> computeSpeech(part, attempt, speechId, done) },
+            play = { audio, done -> sendAudio(audio, attempt, speechId, done) },
+            completed = { ok ->
+                utterance = null
+                if (!ok) {
+                    // 预合成失败或取消后，旧播放回执和超时不能影响下一轮任务。
+                    plays.clear()
+                    if (attempt == generation && device.ready) device.command("task.cancel")
                 }
-            }
-            main.postDelayed({ if (plays.containsKey(playId)) { failed(); device.fail("眼镜播放回执超时") } }, 110000)
-        }
+                completed(ok)
+            },
+        )
+        utterance = pipeline
+        try { pipeline.start(text) } catch (_: Exception) { pipeline.cancel() }
+        // 整段播报须早于桥接层的 120 秒截止时间结束，超时后停止后续分句。
+        main.postDelayed({ if (utterance === pipeline) pipeline.cancel() }, 110000)
     }
-    private fun computeSpeech(text: String, attempt: Long, done: (SpeechAudio?) -> Unit) {
+
+    private fun sendAudio(audio: SpeechAudio, attempt: Long, speechId: String, completed: (Boolean) -> Unit) {
+        val playId = UUID.randomUUID().toString()
+        diagnostic("speech.part", "speechId=$speechId playId=$playId")
+        plays[playId] = Pair(attempt, completed)
+        val pcm = ByteArray(audio.samples.size * 2)
+        audio.samples.forEachIndexed { index, value ->
+            val n = (value * 32767f).toInt().coerceIn(-32768, 32767)
+            pcm[index * 2] = n.toByte(); pcm[index * 2 + 1] = (n shr 8).toByte()
+        }
+        val hash = MessageDigest.getInstance("SHA-256").digest(pcm).joinToString("") { "%02x".format(it.toInt() and 255) }
+        val header = JSONObject().put("id", playId).put("bytes", pcm.size).put("rate", audio.sampleRate).put("sha256", hash)
+        diagnostic("audio.send.start", "playId=$playId bytes=${pcm.size} rate=${audio.sampleRate} audioMs=${audio.samples.size * 1000L / audio.sampleRate}")
+        fun failed() { plays.remove(playId)?.second?.invoke(false) }
+        device.command("play.start", header.toString()) { result ->
+            if (result.isFailure) failed() else {
+                // 逐块等待 SDK 接受再发送下一块，避免无限堆积原生队列。
+                fun sendChunk(offset: Int) {
+                    if (attempt != generation || !plays.containsKey(playId)) return
+                    if (offset == pcm.size) {
+                        diagnostic("audio.send.complete", "playId=$playId")
+                        device.command("play.end", playId) { if (it.isFailure) failed() }
+                        return
+                    }
+                    val count = minOf(3000, pcm.size - offset)
+                    device.command("play.chunk", Base64.encodeToString(pcm, offset, count, Base64.NO_WRAP)) {
+                        if (it.isFailure) failed() else sendChunk(offset + count)
+                    }
+                }
+                sendChunk(0)
+            }
+        }
+        main.postDelayed({ if (plays.containsKey(playId)) { failed(); device.fail("眼镜播放回执超时") } }, 110000)
+    }
+    private fun computeSpeech(text: String, attempt: Long, playId: String, done: (SpeechAudio?) -> Unit) {
         worker.execute {
             if (closed || attempt != generation) return@execute
-            val audio = runCatching { check(text.length in 1..500); speech!!.synthesize(text) }.getOrNull()
+            val started = SystemClock.elapsedRealtime()
+            textTrace.record("tts.part", playId, text)
+            diagnostic("tts.start", "playId=$playId")
+            val result = runCatching {
+                check(text.length in 1..500)
+                speechCache.getOrSynthesize(text) { SpeechTransportAudio.prepare(speech!!.synthesize(text)) }
+            }
+            diagnostic("tts.complete", "playId=$playId elapsedMs=${SystemClock.elapsedRealtime() - started} success=${result.isSuccess} error=${result.exceptionOrNull()?.javaClass?.simpleName}")
+            val audio = result.getOrNull()
             main.post { if (!closed && attempt == generation) done(audio) }
         }
     }
@@ -422,6 +524,8 @@ class CxrlAgentService : Service() {
 
     private fun retire() {
         generation++
+        cloud?.cancel()
+        utterance?.cancel(); utterance = null
         voiceTag = null; photoTag = null
         stopRecording(false)
         // 也清理处于“已提交停止、尚未回执”的音频窗口。
@@ -437,10 +541,21 @@ class CxrlAgentService : Service() {
         if (device.ready) device.command("task.cancel")
     }
     override fun onDestroy() {
+        textTrace.enabled = false
         retire(); closed = true
         device.close(); navigation.close(); web?.close(); web = null
-        worker.execute { runCatching { speech?.close() }; runCatching { model?.close() } }
+        worker.execute { speechCache.clear(); runCatching { speech?.close() }; runCatching { model?.close() } }
         worker.shutdown()
         super.onDestroy()
+    }
+}
+
+/** 用户开启的调试连接才记录文字；JSON 转义保留原文且不会把换行变成伪造日志。 */
+internal class SpeechTextDiagnostics(private val debuggable: Boolean, private val write: (String) -> Unit) {
+    @Volatile var enabled = false
+
+    fun record(stage: String, id: String, text: String) {
+        if (debuggable && enabled)
+            write(JSONObject().put("stage", stage).put("id", id).put("text", text).toString())
     }
 }

@@ -1,6 +1,6 @@
 import { MobileAgentHost } from "./mobile-agent-host.ts";
 import { decodeAgentEvent, encodeAgentEvent, type EffectContract } from "../../../../packages/domain/agent/contract-codecs.ts";
-import { generateValidatedPlan } from "./model-plan-response.ts";
+import { generateValidatedPlan, modelFailureSpeech } from "./model-plan-response.ts";
 import { nativeNavigationEvent, type NativeNavigationPayload } from "./native-navigation-event.ts";
 import { GlassesTaskFlow } from "./glasses-task-flow.ts";
 import { createToolHandlers, type ToolRuntime } from "./tool-handlers.ts";
@@ -524,6 +524,7 @@ function plannerPrompt(input: AgentTurnInput): string {
     "只输出一个 JSON 对象，不要 Markdown，不要解释。字段只有 goal 和 actions，actions 是对象数组。",
     "可用动作：",
     "  1) kind=speak：字段 text、priority(critical|high|normal|detail)。",
+    '     普通回答用 normal。例如：{"goal":"回答用户","actions":[{"kind":"speak","text":"我是乐奇对话助手。","priority":"normal"}]}。',
     "  2) kind=tool_call：字段 skill_id、tool_id、arguments。skill_id 必须是 allowedTools 里含该 tool 的技能。",
     "  3) kind=wait：字段 event_types（用户可能说的下一种事件）。",
     "  4) kind=complete：字段 reason。",
@@ -531,11 +532,15 @@ function plannerPrompt(input: AgentTurnInput): string {
     '  navigation.search_destination：{"query":"要搜索的地点，可用上文补全指代"}。用户换目的地时重新搜索。',
     '  navigation.confirm_destination：{"candidate_id":"上一轮候选列表中用户选中的那个"}。只有用户明确确认某个候选时才调用；用户否认、犹豫或说了别的地点时不要调用，改用 speak 或重新搜索。',
     '  speech.ask_user：{"prompt_template":"要问用户的话，可含 {place} 占位","parameters":{}}。要请用户按键拍一张照片时，在 parameters 里写 {"capability_id":"vision.entrance"|"vision.scene"|"vision.menu"|"vision.expression"|"vision.traffic_signal"}。',
+    '  用户要查看或识别眼前物体且尚无本轮照片时，调用 speech.ask_user 打开拍照确认窗口。speak 只能播报，不会打开这个窗口。',
+    '拍照准备示例：{"goal":"准备识别眼前物体","actions":[{"kind":"tool_call","skill_id":"inspect_scene","tool_id":"speech.ask_user","arguments":{"prompt_template":"请短按戒指左键拍照，我来识别。","parameters":{"capability_id":"vision.scene"}}}]}',
     '  observation.request：{"capability_id":"..."}。只有用户刚为这个能力按下拍摄键、本轮带着那张照片时才会执行；没有授权会被拒绝，此时改用 speech.ask_user 请用户按键拍摄。',
+    '  speech.ask_user 成功后等待用户按键；收到本轮拍照事件再调用 observation.request，读取真实识别结果后回答。你负责识别，不要让用户拍完照片后自己告诉你图里有什么。',
     '  facts.query：{"names":["事实名，可用前缀*"],"limit":数字}。只返回本会话真实观察到的事实；没有就如实说没有，不要编造。',
     '  session.cancel：{"reason":"..."}。只有用户明确要求放弃当前目标时才用。',
     "约束：",
     "  · 一次最多四个动作；不确定就 speak 或 wait，不要猜。",
+    "  · 口头回答通常一到三句，先回答用户的问题，避免重复自我介绍和罗列功能。",
     "  · 导航提醒（开始、转弯、偏航、到达）已由策略确定性播报过，不要重复播报，也不要重复调用导航工具。",
     "  · 不要给出任何“可以安全通行”的结论。",
     "  · session.conversation 是本会话历史，接着上文回答，不要重新开始。",
@@ -682,8 +687,8 @@ const agent: LlmAgent = {
       activePlan = undefined;
       return {
         planId: metadata.planId, sessionId: metadata.sessionId, eventId: metadata.eventId,
-        goal: "模型本轮不可用，保持会话并请用户重复",
-        actions: [{ kind: "speak", text: "我这次没听明白，请再说一次。", priority: "normal" }],
+        goal: "模型本轮不可用，说明原因并保持会话",
+        actions: [{ kind: "speak", text: modelFailureSpeech(error), priority: "normal" }],
         createdAt: metadata.createdAt,
       };
     }
@@ -720,6 +725,7 @@ const host = new MobileAgentHost({
 async function acceptEvent(message: Envelope): Promise<void> {
   let wireEvent = message.payload;
   let permissions = message.permissions;
+  const toolResults: Array<{ toolId: string; status: string; errorCode?: string }> = [];
   // Feedback for the turn that is still running keeps that turn's retirement alive; anything else
   // starts a new turn, and a session retired by an older one must not speak into it.
   const wireType = (wireEvent as { type?: unknown } | undefined)?.type;
@@ -737,11 +743,14 @@ async function acceptEvent(message: Envelope): Promise<void> {
       lastSequence.set(activeEvent.sessionId,
         Math.max(lastSequence.get(activeEvent.sessionId) ?? 0, activeEvent.sequence));
       const output = await host.accept(wireEvent, permissions);
+      toolResults.push(...output.results.map(result => ({
+        toolId: result.toolId, status: result.status, errorCode: result.error?.code,
+      })));
       if (output.rejection?.code === "consent_required") requestCaptureForRejectedPlan();
       const feedback = output.followUpEvents;
       if (!feedback?.length) {
         send({ id: message.id, type: "event.result",
-          payload: { rejection: output.rejection ?? null, replays: replay } });
+          payload: { rejection: output.rejection ?? null, replays: replay, toolResults } });
         return;
       }
       if (feedback.length !== 1) throw new Error("multiple feedback Events require explicit scheduling");
