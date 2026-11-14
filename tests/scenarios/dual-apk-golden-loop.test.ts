@@ -694,6 +694,7 @@ test("cloud authentication failure is spoken once without retry and the next con
   await harness.settle();
   assert.equal(harness.modelPrompts.length, 1);
   assert.equal(harness.speechTexts().at(-1), "DeepSeek 密钥不可用，请在手机的对话模型设置中检查。");
+  assert.equal(harness.sent.filter(message => message.type === "speech.say").at(-1)?.payload.priority, "high");
   assert.equal(harness.toolCalls.length, 0);
   assert.equal(harness.captureArms().length, 0);
   await harness.say("next-turn", "你好");

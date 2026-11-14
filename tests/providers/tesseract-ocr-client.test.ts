@@ -88,3 +88,20 @@ test("拒绝空图片引用并在关闭后拒绝继续识别", async () => {
   await client.close();
   await assert.rejects(client.recognize("menu.jpg"), /客户端已关闭/);
 });
+
+
+test("closing during media resolution must not create a worker", async () => {
+  let resolve!: (path: string) => void;
+  let created = 0;
+  const client = new TesseractOcrClient({
+    resolveMediaRef: () => new Promise<string>(done => { resolve = done; }),
+    createWorker: async () => { created++; return {
+      recognize: async () => ({ data: {} }), terminate: async () => {},
+    }; },
+  });
+  const pending = client.recognize("media://pending");
+  await client.close();
+  resolve("image.png");
+  await assert.rejects(pending, /客户端已关闭/);
+  assert.equal(created, 0);
+});

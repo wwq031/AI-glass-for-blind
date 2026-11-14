@@ -1,5 +1,12 @@
 # 乐奇 AI 眼镜
 
+## 2026-11-14 分支整合
+
+主线已整合 CXR-L Agent 运行时、DeepSeek 对话/语音/看图、指环诊断、可选 Tesseract OCR provider，以及历史进度路线文档。云端故障通知使用本地播报；服务启动会检查权限与定位开关，并安全处理平台拒绝。历史发布说明中的分支状态以其记录日期为准。
+
+本次整合不代表新的 APK 发布或真实设备验收。OCR provider 仍需调用方配置媒体引用解析和本地模型路径；接入说明见 [OCR provider 文档](packages/providers/ocr/README.md)。
+
+
 ## 2026-09-30 双端 APK 交接快照
 
 当前安装包、构建工具、源码接线与实机已知问题见[组员交接说明](docs/handoff/2026-09-30-device-apk-handoff.md)。此版本未通过完整实机验收；APK 下载见项目 Releases 中的 `device-handoff-20260930`。

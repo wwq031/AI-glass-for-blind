@@ -42,7 +42,8 @@ test("CXR-L text comparison is explicitly enabled per connection and traces acce
   for (const stage of ["asr", "speech", "tts.part"]) {
     assert.ok(service.includes(`textTrace.record("${stage}"`));
   }
-  assert.match(service, /override fun onDestroy\(\) \{\s*textTrace.enabled = false/);
+  assert.match(service, /override fun onDestroy\(\) \{\s*shutdown\(\)/);
+  assert.match(service, /private fun shutdown\(\) \{[\s\S]*?textTrace.enabled = false/);
 });
 
 test("CXR-L output contains a working repository Agent and its HTML entry", async () => {

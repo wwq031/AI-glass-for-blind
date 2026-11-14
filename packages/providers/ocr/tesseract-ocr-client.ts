@@ -77,11 +77,13 @@ export class TesseractOcrClient implements OcrClient {
     }
 
     const imagePath = await this.resolveMediaRef(mediaRef);
+    if (this.isClosed) throw new Error("OCR 客户端已关闭，请创建新实例后再识别。");
     if (!imagePath.trim()) {
       throw new Error(`mediaRef 没有解析到本地图片路径：${mediaRef}`);
     }
 
     const worker = await this.getWorker();
+    if (this.isClosed) throw new Error("OCR 客户端已关闭，请创建新实例后再识别。");
     const { data } = await worker.recognize(imagePath, {}, { blocks: true });
     return mapTesseractBlocks(data.blocks ?? []);
   }

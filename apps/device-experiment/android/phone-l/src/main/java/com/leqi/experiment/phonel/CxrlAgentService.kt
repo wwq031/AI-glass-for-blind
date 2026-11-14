@@ -1,5 +1,8 @@
 package com.leqi.experiment.phonel
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.app.*
 import android.content.Intent
 import android.graphics.Bitmap
@@ -19,7 +22,7 @@ import java.util.UUID
 import java.util.concurrent.Executors
 
 /** 前台服务拥有运行时。界面退出不会带走导航；进程重启不会恢复旧授权。 */
-class CxrlAgentService : Service() {
+open class CxrlAgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
     @Volatile private var closed = false
@@ -76,9 +79,26 @@ class CxrlAgentService : Service() {
         diagnostic("model.plan", "id=$id actions=$summary")
     }
 
+    private var runtimeStarted = false
+
     override fun onBind(intent: Intent?) = null
     override fun onCreate() {
         super.onCreate()
+        // onCreate also runs for stop/empty intents. Do not load models or connect here.
+    }
+
+    protected open fun startupBlocker(): String? {
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+            return "bluetooth_permission_missing"
+        if (checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            return "location_permission_missing"
+        if (getSystemService(LocationManager::class.java)?.isLocationEnabled != true)
+            return "location_disabled"
+        return null
+    }
+
+    protected open fun enterForeground() {
         val manager = getSystemService(NotificationManager::class.java)
         manager.createNotificationChannel(NotificationChannel("agent", "助盲任务", NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(this, 1, Intent(this, javaClass).setAction("stop"),
@@ -86,6 +106,10 @@ class CxrlAgentService : Service() {
         startForeground(1, Notification.Builder(this, "agent").setSmallIcon(android.R.drawable.ic_dialog_info)
             .setContentTitle("乐奇助盲 Agent").setContentText("正在准备本地模型和眼镜连接")
             .setOngoing(true).addAction(Notification.Action.Builder(null, "停止任务", stop).build()).build())
+    }
+
+    protected open fun initializeRuntime() {
+        getSharedPreferences("agent_status", MODE_PRIVATE).edit().remove("model_status").apply()
         navigation = AgentNavigationDevice(this)
         web = AgentRuntimeWebView(this, ::handle)
         device = CxrlAgentDevice(this, ::onDevice) { reason ->
@@ -139,16 +163,55 @@ class CxrlAgentService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent == null || intent.action == "stop") { stopSelf(); return START_NOT_STICKY }
+        if (closed) { stopSelf(); return START_NOT_STICKY }
+        if (intent == null || intent.action == "stop") { shutdown(); stopSelf(); return START_NOT_STICKY }
         val token = intent.getStringExtra("token")
-        if (!token.isNullOrBlank()) {
+        if (token.isNullOrBlank()) { rejectStart("authorization_missing"); return START_NOT_STICKY }
+        try {
+            startupBlocker()?.let { rejectStart(it); return START_NOT_STICKY }
+            // The platform still adjudicates while-in-use / background restrictions here.
+            enterForeground()
+            if (!runtimeStarted) { initializeRuntime(); runtimeStarted = true }
             textTrace.enabled = intent.getBooleanExtra("textDiagnostics", false)
-            retire()
-            // 替换连接时同步撤销 Agent 的旧会话，避免旧拍照窗口继续吞掉新按键。
-            envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", "重新连接"))
-            device.connect(token)
+            connectRuntime(token)
+            getSharedPreferences("agent_status", MODE_PRIVATE).edit().remove("startup_failure").apply()
+        } catch (_: SecurityException) {
+            rejectStart("foreground_permission_denied")
+        } catch (_: RuntimeException) {
+            rejectStart("service_start_failed")
         }
         return START_NOT_STICKY
+    }
+
+    protected open fun connectRuntime(token: String) {
+        retire()
+        envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", "重新连接"))
+        device.connect(token)
+    }
+
+    private fun rejectStart(code: String) {
+        // Fixed codes only: no token, native exception message or user content is persisted.
+        Log.w("CxrlAgentService", code)
+        getSharedPreferences("agent_status", MODE_PRIVATE).edit().putString("startup_failure", code).apply()
+        shutdown()
+        stopSelf()
+    }
+
+    private fun shutdown() {
+        if (closed) return
+        closed = true
+        textTrace.enabled = false
+        runCatching { retire() }
+        runCatching { releaseRuntime() }
+        runCatching { stopForeground(STOP_FOREGROUND_REMOVE) }
+    }
+
+    protected open fun releaseRuntime() {
+        if (::device.isInitialized) runCatching { device.close() }
+        if (::navigation.isInitialized) runCatching { navigation.close() }
+        runCatching { web?.close() }; web = null
+        worker.execute { speechCache.clear(); runCatching { speech?.close() }; speech = null; runCatching { model?.close() }; model = null }
+        worker.shutdown()
     }
 
     private fun status(text: String) { main.post {
@@ -258,6 +321,7 @@ class CxrlAgentService : Service() {
     }
 
     private fun onDevice(packet: JSONObject) {
+        if (closed) return
         val type = packet.optString("type")
         val tag = packet.optString("payload")
         when (type) {
@@ -567,29 +631,25 @@ class CxrlAgentService : Service() {
 
     private fun retire() {
         generation++
-        cloud?.cancel()
-        cloudTools?.cancel()
-        utterance?.cancel(); utterance = null
+        runCatching { cloud?.cancel() }
+        runCatching { cloudTools?.cancel() }
+        runCatching { utterance?.cancel() }; utterance = null
         voiceTag = null; photoTag = null
-        stopRecording(false)
+        runCatching { stopRecording(false) }
         // 也清理处于“已提交停止、尚未回执”的音频窗口。
         audioStop = null
-        microphone?.let { microphoneSession?.removeAudioCallback(it) }
+        runCatching { microphone?.let { microphoneSession?.removeAudioCallback(it) } }
         runCatching { microphoneSession?.stopAudioStream() }
         microphone = null; microphoneSession = null
-        clearPhoto(); media.clear()
-        val pending = plays.values.toList(); plays.clear(); pending.forEach { it.second(false) }
+        runCatching { clearPhoto() }; photoCallback = null; photoSession = null; media.clear()
+        val pending = plays.values.toList(); plays.clear(); pending.forEach { runCatching { it.second(false) } }
         route = null
-        startingRoute?.let { reply(it, error = "导航已取消") }; startingRoute = null
-        navigation.stopWalking { }
-        if (device.ready) device.command("task.cancel")
+        runCatching { startingRoute?.let { reply(it, error = "导航已取消") } }; startingRoute = null
+        if (::navigation.isInitialized) runCatching { navigation.stopWalking { } }
+        if (::device.isInitialized && device.ready) runCatching { device.command("task.cancel") }
     }
     override fun onDestroy() {
-        textTrace.enabled = false
-        retire(); closed = true
-        device.close(); navigation.close(); web?.close(); web = null
-        worker.execute { speechCache.clear(); runCatching { speech?.close() }; runCatching { model?.close() } }
-        worker.shutdown()
+        shutdown()
         super.onDestroy()
     }
 }

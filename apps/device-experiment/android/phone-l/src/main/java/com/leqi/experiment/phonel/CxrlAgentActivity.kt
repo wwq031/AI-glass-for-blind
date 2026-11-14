@@ -161,9 +161,13 @@ class CxrlAgentActivity : Activity() {
         if (token == null) { status.text = "授权未完成，请重试"; return }
         if (diagnosticMode) { startInputDiagnostics(token); return }
         // Token 只在内存中的启动信封传递，不保存、不记录。
+        try {
         startForegroundService(Intent(this, CxrlAgentService::class.java).putExtra("token", token)
             .putExtra("textDiagnostics", textDiagnostics))
         status.text = "正在准备本地模型和眼镜连接，进度见通知。\n眼镜提示就绪后：短按开始，提示后短按录音，再短按结束。结束任务请在手机点停止任务与连接。"
+        } catch (_: RuntimeException) {
+            status.text = "服务未能启动，请确认权限、定位开关及应用在前台后重新连接"
+        }
     }
     /** 诊断连接由页面持有，原始输入只写日志；不启动模型和业务服务。 */
     private fun startInputDiagnostics(token: String) {

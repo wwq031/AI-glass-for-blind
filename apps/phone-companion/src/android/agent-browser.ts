@@ -688,7 +688,7 @@ const agent: LlmAgent = {
       return {
         planId: metadata.planId, sessionId: metadata.sessionId, eventId: metadata.eventId,
         goal: "模型本轮不可用，说明原因并保持会话",
-        actions: [{ kind: "speak", text: modelFailureSpeech(error), priority: "normal" }],
+        actions: [{ kind: "speak", text: modelFailureSpeech(error), priority: "high" }],
         createdAt: metadata.createdAt,
       };
     }
