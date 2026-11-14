@@ -29,6 +29,7 @@ class CxrlAgentService : Service() {
     private lateinit var navigation: AgentNavigationDevice
     private var model: GemmaLocalBridge? = null
     private var cloud: DeepSeekClient? = null
+    private var cloudTools: DeepSeekToolClient? = null
     private var utterance: CxrlSpeechPlayback? = null
     private var speech: SpeechEngines? = null
     private val speechCache = SpeechAudioCache()
@@ -101,20 +102,29 @@ class CxrlAgentService : Service() {
                     }
                     check(key.isNotBlank())
                     cloud = DeepSeekClient(key, settings.model, usage = settings::recordUsage)
+                    if (settings.mode == AgentModelSettings.Mode.FULL) cloudTools = DeepSeekToolClient(key)
                 } else localModel()
-                val engines = SherpaSpeechEngines(SpeechAssets.prepare(this) { closed })
-                speech = engines; engines.initialize()
+                if (cloudTools == null) localSpeech()
             }
             main.post {
                 if (!closed) {
                     modelsReady = outcome.isSuccess
                     if (device.ready) device.command("status", if (modelsReady) "准备好了，短按开始；结束请在手机点停止任务与连接" else "模型准备失败，请在手机检查")
-                    status(if (modelsReady) "${if (cloud == null) "免费本地模型" else "DeepSeek 对话、本地语音"}已就绪；连接后按键开始"
+                    status(if (modelsReady) "${AgentModelSettings(this).mode.label}已就绪；连接后按键开始"
                         else if (outcome.exceptionOrNull() is ModelServiceException) "密钥读取失败，请在对话模型设置中重新填写"
                         else "本地模型准备失败：${outcome.exceptionOrNull()!!.javaClass.simpleName}")
                 }
             }
         }
+    }
+
+    /** Used only on the model worker. Local prompts also work in fully connected mode. */
+    private fun localSpeech(): SpeechEngines {
+        speech?.let { return it }
+        val engines = SherpaSpeechEngines(SpeechAssets.prepare(this) { closed })
+        try { engines.initialize() } catch (error: Exception) { engines.close(); throw error }
+        speech = engines
+        return engines
     }
 
     /** 云端对话不等待 Gemma 加载；首次看图时才准备本地视觉模型。仅 worker 调用。 */
@@ -188,9 +198,24 @@ class CxrlAgentService : Service() {
                 }
                 "vision.observe" -> {
                     val bytes = media.remove(payload.getString("mediaRef")) ?: error("照片已过期或已使用")
-                    compute(id) { localModel().generateVision(bytes, payload.getString("prompt")) }
+                    val attempt = generation
+                    compute(id) {
+                        val prompt = payload.getString("prompt")
+                        val tools = cloudTools
+                        val cancelled = { closed || attempt != generation }
+                        when {
+                            tools == null -> localModel().generateVision(bytes, prompt)
+                            payload.optString("capabilityId") == "vision.menu" -> {
+                                val result = tools.recognize(bytes, cancelled)
+                                result.optInt("page_count", -1).takeIf { it >= 0 }?.let(AgentModelSettings(this)::recordOcr)
+                                result.toString()
+                            }
+                            else -> checkNotNull(cloud).observe(prompt, bytes, cancelled)
+                        }
+                    }
                 }
-                "speech.say" -> say(payload.getString("text")) { ok ->
+                "speech.say" -> say(payload.getString("text"),
+                    payload.optBoolean("local") || payload.optString("priority") in setOf("high", "critical")) { ok ->
                     if (ok) reply(id, JSONObject().put("finished", true)) else reply(id, error = "眼镜播报未完成")
                 }
                 "device.send" -> deviceCommand(id, payload)
@@ -318,12 +343,20 @@ class CxrlAgentService : Service() {
     }
     private fun transcribe(raw: ByteArray, tag: String, attempt: Long) {
         worker.execute {
+            if (closed || attempt != generation) return@execute
             val result = runCatching {
                 check(raw.size >= 6400 && raw.size % 2 == 0)
-                val samples = FloatArray(raw.size / 2) { index ->
-                    (((raw[index * 2].toInt() and 255) or (raw[index * 2 + 1].toInt() shl 8)).toShort()) / 32768f
+                val tools = cloudTools
+                if (tools != null) {
+                    val response = tools.transcribe(raw) { closed || attempt != generation }
+                    response.optLong("duration_ms", -1L).takeIf { it >= 0 }?.let(AgentModelSettings(this)::recordAsr)
+                    response.opt("text") as? String ?: throw ModelServiceException("cloud_format")
+                } else {
+                    val samples = FloatArray(raw.size / 2) { index ->
+                        (((raw[index * 2].toInt() and 255) or (raw[index * 2 + 1].toInt() shl 8)).toShort()) / 32768f
+                    }
+                    localSpeech().transcribe(samples)
                 }
-                speech!!.transcribe(samples)
             }
             main.post {
                 if (!closed && attempt == generation) {
@@ -332,6 +365,7 @@ class CxrlAgentService : Service() {
                         textTrace.record("asr", "cxrl-${counter + 1}", it)
                         payload.put("transcript", it)
                     }
+                    (result.exceptionOrNull() as? ModelServiceException)?.let { payload.put("error", it.code) }
                     envelope("native.speech", payload)
                 }
             }
@@ -380,14 +414,14 @@ class CxrlAgentService : Service() {
         photoCallback = null; photoSession = null; photoTag = null
     }
 
-    private fun say(text: String, completed: (Boolean) -> Unit) {
+    private fun say(text: String, local: Boolean, completed: (Boolean) -> Unit) {
         if (!device.ready || !modelsReady || utterance != null) { completed(false); return }
         val attempt = generation
         val speechId = UUID.randomUUID().toString()
         textTrace.record("speech", speechId, text)
         diagnostic("speech.request", "playId=$speechId chars=${text.length}")
         val pipeline = CxrlSpeechPlayback(
-            synthesize = { part, done -> computeSpeech(part, attempt, speechId, done) },
+            synthesize = { part, done -> computeSpeech(part, attempt, speechId, local, done) },
             play = { audio, done -> sendAudio(audio, attempt, speechId, done) },
             completed = { ok ->
                 utterance = null
@@ -438,7 +472,7 @@ class CxrlAgentService : Service() {
         }
         main.postDelayed({ if (plays.containsKey(playId)) { failed(); device.fail("眼镜播放回执超时") } }, 110000)
     }
-    private fun computeSpeech(text: String, attempt: Long, playId: String, done: (SpeechAudio?) -> Unit) {
+    private fun computeSpeech(text: String, attempt: Long, playId: String, local: Boolean, done: (SpeechAudio?) -> Unit) {
         worker.execute {
             if (closed || attempt != generation) return@execute
             val started = SystemClock.elapsedRealtime()
@@ -446,7 +480,16 @@ class CxrlAgentService : Service() {
             diagnostic("tts.start", "playId=$playId")
             val result = runCatching {
                 check(text.length in 1..500)
-                speechCache.getOrSynthesize(text) { SpeechTransportAudio.prepare(speech!!.synthesize(text)) }
+                val tools = cloudTools
+                if (tools != null && !local) {
+                    speechCache.getOrSynthesize("deepseek:stella:pcm:$text") {
+                        tools.synthesize(text) { closed || attempt != generation }.also {
+                            AgentModelSettings(this).recordTts(text.codePointCount(0, text.length))
+                        }
+                    }
+                } else {
+                    speechCache.getOrSynthesize("local:$text") { SpeechTransportAudio.prepare(localSpeech().synthesize(text)) }
+                }
             }
             diagnostic("tts.complete", "playId=$playId elapsedMs=${SystemClock.elapsedRealtime() - started} success=${result.isSuccess} error=${result.exceptionOrNull()?.javaClass?.simpleName}")
             val audio = result.getOrNull()
@@ -525,6 +568,7 @@ class CxrlAgentService : Service() {
     private fun retire() {
         generation++
         cloud?.cancel()
+        cloudTools?.cancel()
         utterance?.cancel(); utterance = null
         voiceTag = null; photoTag = null
         stopRecording(false)

@@ -17,7 +17,6 @@ import android.widget.LinearLayout
 import android.widget.RadioButton
 import android.widget.RadioGroup
 import android.widget.ScrollView
-import android.widget.Switch
 import android.widget.TextView
 import com.leqi.experiment.phonebt.AmapPrivacy
 import com.rokid.cxr.session.*
@@ -64,10 +63,14 @@ class CxrlAgentActivity : Activity() {
         val settings = AgentModelSettings(this)
         val content = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(32, 16, 32, 16) }
         content.addView(TextView(this).apply {
-            text = "免费模式：对话、识别、播报和看图均在手机运行。\nDeepSeek 模式：手机直接联网，无需电脑或服务器；按用量收费。将发送对话文字、历史及必要任务上下文（包括识别结果、导航候选），录音和照片在本机处理。\n应用已收到的累计用量：${settings.totalTokens} tokens；费用以 DeepSeek 账单为准。"
+            text = "仅对话模式发送文字、历史和必要任务上下文。全接入模式还会发送本轮录音、确认拍摄的照片和播报文字。两种 DeepSeek 模式均按用量收费。\n本机记录：${settings.totalTokens} tokens，转写 ${settings.asrMs / 1000.0} 秒，合成 ${settings.ttsCharacters} 字符，OCR ${settings.ocrPages} 页。以 DeepSeek 账单为准。"
         })
-        val enabled = Switch(this).apply { text = "开启 DeepSeek 对话（按用量收费）"; isChecked = settings.cloudEnabled }
-        content.addView(enabled)
+        val modes = RadioGroup(this)
+        AgentModelSettings.Mode.entries.forEach { mode ->
+            modes.addView(RadioButton(this).apply { id = 201 + mode.ordinal; text = mode.label })
+        }
+        modes.check(201 + settings.mode.ordinal)
+        content.addView(modes)
         val models = RadioGroup(this)
         models.addView(RadioButton(this).apply { id = 101; text = "Flash：费用较低，默认推荐" })
         models.addView(RadioButton(this).apply { id = 102; text = "Pro：更强推理，费用较高" })
@@ -90,21 +93,22 @@ class CxrlAgentActivity : Activity() {
         dialog.window?.addFlags(WindowManager.LayoutParams.FLAG_SECURE)
         dialog.setOnShowListener {
             dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener {
-                if (enabled.isChecked && key.text.isNullOrBlank() && !settings.hasKey) {
+                val mode = AgentModelSettings.Mode.entries[modes.checkedRadioButtonId - 201]
+                if (mode != AgentModelSettings.Mode.LOCAL && key.text.isNullOrBlank() && !settings.hasKey) {
                     feedback.text = "请先填写 API Key，或关闭 DeepSeek 使用免费模式"; return@setOnClickListener
                 }
-                val saved = runCatching { settings.save(enabled.isChecked,
+                val saved = runCatching { settings.save(mode,
                     if (models.checkedRadioButtonId == 102) AgentModelSettings.PRO else AgentModelSettings.FLASH,
                     key.text.toString()) }
                 if (saved.isFailure) { feedback.text = "保存失败，请检查密钥是否包含空格，或清除旧密钥后重新填写"; return@setOnClickListener }
                 stopService(Intent(this, CxrlAgentService::class.java))
-                status.text = "设置已保存，请点击授权并连接眼镜。当前对话：${if (enabled.isChecked) "DeepSeek" else "免费本地模型"}"
+                status.text = "设置已保存，请点击授权并连接眼镜。当前模式：${mode.label}"
                 key.text.clear(); dialog.dismiss()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
                 runCatching { settings.clearKey() }.fold({
                     stopService(Intent(this, CxrlAgentService::class.java))
-                    key.text.clear(); enabled.isChecked = false
+                    key.text.clear(); modes.check(201)
                     feedback.text = "密钥已清除，已切回免费模式；关闭此窗口后重新连接眼镜"
                     status.text = "已切回免费模式，请重新连接眼镜"
                 }, { feedback.text = "密钥清除失败，请重试" })

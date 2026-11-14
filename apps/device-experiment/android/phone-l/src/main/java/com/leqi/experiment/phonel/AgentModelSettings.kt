@@ -18,11 +18,26 @@ internal class AgentModelSettings(
 ) {
     constructor(context: Context) : this(context.getSharedPreferences("agent_model", Context.MODE_PRIVATE), ::deviceKey)
 
-    val cloudEnabled: Boolean get() = preferences.getBoolean("cloud", false)
+    enum class Mode(val label: String) {
+        LOCAL("本地"), CHAT("仅 DeepSeek 对话"), FULL("DeepSeek 全接入"),
+    }
+
+    val mode: Mode get() {
+        val saved = preferences.getString("mode", null)
+        return Mode.entries.find { it.name == saved }
+            ?: if (preferences.getBoolean("cloud", false)) Mode.CHAT else Mode.LOCAL
+    }
+    val cloudEnabled: Boolean get() = mode != Mode.LOCAL
     val model: String get() = preferences.getString("model", FLASH)!!
     val hasKey: Boolean get() = preferences.contains("credential")
     val totalTokens: Long get() = preferences.getLong("tokens", 0)
     fun recordUsage(tokens: Int) { preferences.edit().putLong("tokens", totalTokens + tokens).apply() }
+    val asrMs: Long get() = preferences.getLong("asr_ms", 0)
+    val ttsCharacters: Long get() = preferences.getLong("tts_characters", 0)
+    val ocrPages: Long get() = preferences.getLong("ocr_pages", 0)
+    fun recordAsr(ms: Long) { preferences.edit().putLong("asr_ms", asrMs + ms).apply() }
+    fun recordTts(characters: Int) { preferences.edit().putLong("tts_characters", ttsCharacters + characters).apply() }
+    fun recordOcr(pages: Int) { preferences.edit().putLong("ocr_pages", ocrPages + pages).apply() }
 
     fun apiKey(): String {
         val saved = preferences.getString("credential", null) ?: return ""
@@ -34,12 +49,16 @@ internal class AgentModelSettings(
     }
 
     /** 空输入保留已存密钥，切换本地模式不需要解密密钥。 */
-    fun save(cloud: Boolean, selectedModel: String, replacementKey: String) {
+    fun save(cloud: Boolean, selectedModel: String, replacementKey: String) =
+        save(if (cloud) Mode.CHAT else Mode.LOCAL, selectedModel, replacementKey)
+
+    fun save(mode: Mode, selectedModel: String, replacementKey: String) {
         require(selectedModel in listOf(FLASH, PRO))
         val key = replacementKey.trim()
         require(key.none { it.isWhitespace() || it.isISOControl() })
-        require(!cloud || key.isNotEmpty() || hasKey)
-        val edit = preferences.edit().putBoolean("cloud", cloud).putString("model", selectedModel)
+        require(mode == Mode.LOCAL || key.isNotEmpty() || hasKey)
+        val edit = preferences.edit().putBoolean("cloud", mode != Mode.LOCAL)
+            .putString("mode", mode.name).putString("model", selectedModel)
         if (key.isNotEmpty()) {
             val cipher = Cipher.getInstance("AES/GCM/NoPadding")
             cipher.init(Cipher.ENCRYPT_MODE, encryptionKey())
@@ -49,7 +68,8 @@ internal class AgentModelSettings(
         check(edit.commit())
     }
 
-    fun clearKey() { check(preferences.edit().remove("credential").remove("iv").putBoolean("cloud", false).commit()) }
+    fun clearKey() { check(preferences.edit().remove("credential").remove("iv")
+        .putBoolean("cloud", false).putString("mode", Mode.LOCAL.name).commit()) }
 
     companion object {
         const val FLASH = "deepseek-flash"

@@ -320,8 +320,8 @@ const runningRoutes = new Set<string>();
  */
 let destinationCapture: { sessionId: string; capabilityId: string; mediaRef: string; capturedAt: string } | undefined;
 
-const vision = createNativeVisionClient(async ({ mediaRef, prompt }) => {
-  const answer = await nativeStep<unknown>(operationGeneration, "vision.observe", { mediaRef, prompt });
+const vision = createNativeVisionClient(async (request) => {
+  const answer = await nativeStep<unknown>(operationGeneration, "vision.observe", request);
   if (answer === undefined) throw new OperationCancelled("vision.observe");
   return answer;
 });
@@ -346,7 +346,7 @@ const observation = new ObservationGateway(
 );
 
 const speech = new SpeechQueue({
-  speak: async (effect) => {
+  speak: async (effect, local) => {
     // An utterance that was queued before the retirement and is only reached now belongs to a
     // conversation that is over; it never reaches the device. The one exception is the turn that
     // performed the retirement, whose own announcement is the last thing that session may say.
@@ -355,7 +355,7 @@ const speech = new SpeechQueue({
     }
     const generation = operationGeneration;
     const spoken = await nativeStep<{ finished?: boolean }>(generation, "speech.say", {
-      text: effect.text, priority: effect.priority, allowRepeat: true,
+      text: effect.text, priority: effect.priority, allowRepeat: true, local,
     });
     return generation === operationGeneration && spoken?.finished === true;
   },
@@ -413,7 +413,7 @@ const toolRuntime: ToolRuntime = {
     // would open a window the user's answer could no longer be accepted on.
     const expired = () => Date.parse(expiresAt) <= Date.now();
     if (expired()) return { opened: false, window, reason: "the question expired before it was asked" };
-    const finished = await speech.enqueue(text, "normal", sessionId);
+    const finished = await speech.enqueue(text, "normal", sessionId, true);
     if (!finished) return { opened: false, window, reason: "the question was not played" };
     if (expired()) return { opened: false, window, reason: "the question expired while it was playing" };
     if (generation !== operationGeneration || !glasses.live) {
@@ -858,7 +858,7 @@ async function handlePress(message: Envelope): Promise<void> {
       // The opening line is help, not a destination prompt: whatever the user says next decides
       // which skill this conversation is about.
       const finished = await speech.enqueue(
-        "我在。你可以说出想去的地方，也可以问我眼前的情况。", "normal", sessionId);
+        "我在。你可以说出想去的地方，也可以问我眼前的情况。", "normal", sessionId, true);
       if (!finished || generation !== operationGeneration) return;
       const purpose = glasses.armVoice();
       await nativeStep(generation, "device.send", { type: "voice.arm", payload: purpose });
@@ -936,7 +936,7 @@ async function endTaskOnAuthorityFailure(envelopeId: string, type: string, reaso
 }
 
 async function handleNativeSpeech(message: Envelope): Promise<void> {
-  const native = message.payload as { purpose?: string; transcript?: string } | undefined;
+  const native = message.payload as { purpose?: string; transcript?: string; error?: string } | undefined;
   if (!native || typeof native.purpose !== "string") throw new Error("native speech purpose missing");
   const generation = operationGeneration;
   const sessionId = glasses.sessionId;
@@ -947,7 +947,8 @@ async function handleNativeSpeech(message: Envelope): Promise<void> {
       await endTaskOnAuthorityFailure(message.id, "speech.input", "empty-transcript");
       return;
     }
-    if (!await speech.enqueue("没有听清，请再按键说一次。", "high", sessionId)) return;
+    const prompt = native.error ? modelFailureSpeech(new Error(native.error)) : "没有听清，请再按键说一次。";
+    if (!await speech.enqueue(prompt, "high", sessionId)) return;
     if (generation !== operationGeneration) return;
     // An empty recording retires its window exactly like an expiry does, so the audio and the
     // failure of the attempt just answered can never be counted against the reopened one.

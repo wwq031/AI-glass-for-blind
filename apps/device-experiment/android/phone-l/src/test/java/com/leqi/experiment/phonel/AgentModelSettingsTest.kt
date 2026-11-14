@@ -13,6 +13,18 @@ import javax.crypto.KeyGenerator
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [35])
 class AgentModelSettingsTest {
+    @Test fun oldCloudSettingKeepsMediaLocalUntilFullModeIsSelected() {
+        val preferences = RuntimeEnvironment.getApplication().getSharedPreferences(UUID.randomUUID().toString(), Context.MODE_PRIVATE)
+        val encryptionKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
+        val settings = AgentModelSettings(preferences) { encryptionKey }
+        preferences.edit().putBoolean("cloud", true).commit()
+        assertEquals(AgentModelSettings.Mode.CHAT, settings.mode)
+        settings.save(AgentModelSettings.Mode.FULL, AgentModelSettings.FLASH, "test-private-key")
+        assertEquals(AgentModelSettings.Mode.FULL, AgentModelSettings(preferences) { encryptionKey }.mode)
+        settings.clearKey()
+        assertEquals(AgentModelSettings.Mode.LOCAL, settings.mode)
+    }
+
     @Test fun defaultsFreeAndCredentialsAreEncryptedAcrossReopen() {
         val preferences = RuntimeEnvironment.getApplication().getSharedPreferences(UUID.randomUUID().toString(), Context.MODE_PRIVATE)
         val encryptionKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()

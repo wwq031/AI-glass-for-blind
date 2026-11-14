@@ -6,6 +6,7 @@ import type {
 export interface OcrLine {
   text: string;
   confidence: number;
+  partial?: boolean;
 }
 
 export interface OcrClient {
@@ -23,13 +24,14 @@ export class OcrObservationAdapter implements ObservationAnalyzer {
   async analyze(request: ObservationRequest) {
     const lines = await this.client.recognize(request.media_refs[0]);
     const readable = lines.filter(({ text }) => text.trim());
+    const truncated = readable.some(line => line.partial);
     const average = readable.length
       ? readable.reduce((sum, line) => sum + line.confidence, 0) / readable.length
       : 0;
     const confidence = average >= 0.8 ? "high" : average >= 0.5 ? "medium" : "low";
 
     return {
-      status: readable.length ? (average >= 0.5 ? "succeeded" : "partial") : "needs_retake",
+      status: readable.length ? (average >= 0.5 && !truncated ? "succeeded" : "partial") : "needs_retake",
       confidence,
       needs_retake: readable.length === 0,
       summary: readable.length ? `识别到${readable.length}行文字。` : "没有识别到清晰文字，请调整角度后重拍。",
@@ -41,7 +43,7 @@ export class OcrObservationAdapter implements ObservationAnalyzer {
         evidence: [`line:${index + 1}`],
       })),
       ocr: readable.map((line) => ({ text: line.text, confidence: line.confidence })),
-      limitations: readable.length ? [] : ["text_not_visible"],
+      limitations: truncated ? ["ocr_output_truncated"] : readable.length ? [] : ["text_not_visible"],
     } as const;
   }
 }

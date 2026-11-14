@@ -8,7 +8,7 @@ import { createBrowserArgumentValidator } from "./contract-schemas.ts";
  * back. It is deliberately dumb — it does not know this repository's contracts, and it never
  * decides anything. The structured Fact/ObservationResult shape is imposed here, by the caller.
  */
-export type VisionObserve = (request: { mediaRef: string; prompt: string }) => Promise<unknown>;
+export type VisionObserve = (request: { mediaRef: string; prompt: string; capabilityId: string }) => Promise<unknown>;
 
 const CONFIDENCES: readonly Confidence[] = ["high", "medium", "low", "unknown"];
 
@@ -216,10 +216,10 @@ export function createNativeVisionClient(
   const now = options.now ?? (() => Date.now());
   const validUntilMs = options.validUntilMs ?? 60_000;
 
-  const call = async (mediaRef: string, prompt: string): Promise<unknown> => {
+  const call = async (mediaRef: string, prompt: string, capabilityId: string): Promise<unknown> => {
     // The port hands back a raw JSON string. What cannot be read as JSON is marked as such instead
     // of being passed on as a payload, so no unparsed text can ever reach the fact vocabulary.
-    const parsed = parseJsonString(await observe({ mediaRef, prompt }));
+    const parsed = parseJsonString(await observe({ mediaRef, prompt, capabilityId }));
     return parsed === undefined ? UNSTRUCTURED : parsed;
   };
 
@@ -233,7 +233,7 @@ export function createNativeVisionClient(
         ? verifiedNavigationContext(context) : undefined;
       const prompt = [SHARED_RULES.join("\n"), PROMPTS[capabilityId] ?? "", navigationContext ?? ""]
         .filter((part) => part.length > 0).join("\n");
-      const payload = await call(mediaRef, prompt);
+      const payload = await call(mediaRef, prompt, capabilityId);
       if (!isRecord(payload) || typeof payload.summary !== "string" || !Array.isArray(payload.facts)) {
         // Either the device answered a sentence it could not structure, or it answered text this
         // adapter could not parse. Both are "no facts": a summary is never evidence by itself.
@@ -284,7 +284,16 @@ export function createNativeVisionClient(
 
   const ocr: OcrClient = {
     async recognize(mediaRef): Promise<OcrLine[]> {
-      const payload = await call(mediaRef, OCR_PROMPT);
+      const payload = await call(mediaRef, OCR_PROMPT, "vision.menu");
+      if (isRecord(payload) && Array.isArray(payload.pages)) {
+        return payload.pages.filter(isRecord).sort((a, b) => Number(a.index) - Number(b.index)).flatMap(page => {
+          if (typeof page.text !== "string") return [];
+          return page.text.replace(/<｜box｜>[\s\S]*?<｜\/box｜>/g, "")
+            .replace(/<｜\/?ref｜>/g, "").split(/\r?\n/)
+            .map(text => text.trim()).filter(Boolean)
+            .map(text => ({ text, confidence: 0, partial: page.finish_reason === "length" }));
+        });
+      }
       const lines = isRecord(payload) && Array.isArray(payload.lines) ? payload.lines : [];
       return lines.flatMap((line) => {
         if (!isRecord(line) || typeof line.text !== "string" || !line.text.trim()) return [];

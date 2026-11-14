@@ -2,6 +2,7 @@ package com.leqi.experiment.phonel
 
 import org.json.JSONArray
 import org.json.JSONObject
+import android.util.Base64
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.SocketTimeoutException
@@ -19,7 +20,13 @@ internal class DeepSeekClient(
     private val lock = Any()
     private var active: HttpURLConnection? = null
 
-    fun generate(prompt: String, cancelled: () -> Boolean): String {
+    fun generate(prompt: String, cancelled: () -> Boolean): String =
+        complete(model, prompt, null, cancelled)
+
+    fun observe(prompt: String, jpeg: ByteArray, cancelled: () -> Boolean): String =
+        complete(AgentModelSettings.FLASH, prompt, jpeg, cancelled)
+
+    private fun complete(selectedModel: String, prompt: String, jpeg: ByteArray?, cancelled: () -> Boolean): String {
         if (apiKey.isBlank()) throw ModelServiceException("cloud_key_missing")
         val connection = synchronized(lock) {
             if (cancelled()) throw ModelServiceException("cloud_cancelled")
@@ -33,13 +40,18 @@ internal class DeepSeekClient(
             connection.doOutput = true
             connection.setRequestProperty("Authorization", "Bearer $apiKey")
             connection.setRequestProperty("Content-Type", "application/json; charset=utf-8")
-            val body = JSONObject().put("model", model).put("stream", false)
+            val content: Any = if (jpeg == null) prompt else JSONArray()
+                .put(JSONObject().put("type", "text").put("text", prompt))
+                .put(JSONObject().put("type", "image_url").put("image_url", JSONObject()
+                    .put("url", "data:image/jpeg;base64,${Base64.encodeToString(jpeg, Base64.NO_WRAP)}")))
+            val body = JSONObject().put("model", selectedModel).put("stream", false)
                 .put("thinking", JSONObject().put("type", "disabled"))
                 .put("max_tokens", 1536).put("response_format", JSONObject().put("type", "json_object"))
                 .put("messages", JSONArray()
                     .put(JSONObject().put("role", "system").put("content",
-                        "严格按用户提供的 Agent 合同输出 JSON。工具动作由眼镜应用执行，需要准备拍照时输出对应 tool_call。回答简短，通常一到三句。speak.priority 只能是 critical、high、normal、detail；普通对话用 normal。"))
-                    .put(JSONObject().put("role", "user").put("content", prompt)))
+                        if (jpeg == null) "严格按用户提供的 Agent 合同输出 JSON。工具动作由眼镜应用执行，需要准备拍照时输出对应 tool_call。回答简短，通常一到三句。speak.priority 只能是 critical、high、normal、detail；普通对话用 normal。"
+                        else "根据当前图片和观察要求输出 JSON。只报告图中可见的事实。"))
+                    .put(JSONObject().put("role", "user").put("content", content)))
                 .toString().toByteArray(Charsets.UTF_8)
             if (cancelled()) throw ModelServiceException("cloud_cancelled")
             connection.setFixedLengthStreamingMode(body.size)
@@ -59,8 +71,8 @@ internal class DeepSeekClient(
             json.optJSONObject("usage")?.optInt("total_tokens", -1)?.takeIf { it >= 0 }?.let(usage)
             val choice = json.optJSONArray("choices")?.optJSONObject(0)
             if (choice?.optString("finish_reason") != "stop") throw ModelServiceException("cloud_format")
-            val content = choice.optJSONObject("message")?.opt("content") as? String
-            return content?.takeIf { it.isNotBlank() } ?: throw ModelServiceException("cloud_format")
+            val answer = choice.optJSONObject("message")?.opt("content") as? String
+            return answer?.takeIf { it.isNotBlank() } ?: throw ModelServiceException("cloud_format")
         } catch (_: SocketTimeoutException) {
             throw ModelServiceException("cloud_timeout")
         } catch (_: IOException) {
