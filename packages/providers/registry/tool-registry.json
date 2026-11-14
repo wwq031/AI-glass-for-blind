@@ -10,7 +10,7 @@
       "input_schema": "../../contracts/schemas/speech-ask-user.schema.json",
       "output_schema": "../../contracts/schemas/tool-result.schema.json",
       "requires_consent": false,
-      "timeout_ms": 3000,
+      "timeout_ms": 30000,
       "retry_policy": "never",
       "allowed_states": ["destination_input", "destination_confirm", "intersection_check", "entrance_check", "menu_reading", "conversation_assist"],
       "emits": ["speech.prompted"]

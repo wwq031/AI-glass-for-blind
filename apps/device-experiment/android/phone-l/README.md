@@ -1,4 +1,10 @@
-# CXR-L 独立诊断探针
+# CXR-L 应用与诊断探针
+
+## 2026-11-04 Agent 集成入口
+
+新增 `CxrlAgentActivity` 启动入口与 `CxrlAgentService` 前台服务；`CUSTOM_APP` 连接轻量眼镜端，复用仓库 Agent、模型和导航设备端口。原 `PhoneLActivity` 作为应用内诊断页保留。
+
+构建与真机边界见 [CXR-L Agent 集成交付](../../../../docs/handoff/2026-11-04-cxrl-agent-integration.md)。下文是历史独立探针记录，不代表新 Agent 路径的验收结果。
 
 对应 [#20](https://github.com/wwq031/AI-glass-for-blind/issues/20) 和 [#21](https://github.com/wwq031/AI-glass-for-blind/issues/21)。在现有模块恢复 `PhoneLActivity`，检查官方 App 安装/兼容性，提供授权与 CUSTOM_VIEW Session 诊断；不初始化 Agent、模型、TTS 或地图。
 

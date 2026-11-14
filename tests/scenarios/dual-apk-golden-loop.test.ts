@@ -226,7 +226,7 @@ interface Harness {
   /** How many requests of this type are still waiting for a reply. */
   heldCount(type: string): number;
   /** Answers every held request of this type; returns how many were waiting. */
-  answer(type: string, payload: unknown): number;
+  answer(type: string, payload: unknown, error?: string): number;
   /** Answers anything still held, so the test can end without a live request timer. */
   finish(): void;
   sent: NativeEnvelope[];
@@ -441,10 +441,10 @@ async function createHarness(): Promise<Harness> {
     settle,
     hold: (type, count = Number.POSITIVE_INFINITY) => { held.set(type, count); },
     heldCount: (type) => (heldRequests.get(type) ?? []).length,
-    answer: (type, payload) => {
+    answer: (type, payload, error) => {
       const waiting = heldRequests.get(type) ?? [];
       heldRequests.set(type, []);
-      for (const message of waiting) reply(message.id, payload);
+      for (const message of waiting) reply(message.id, payload, error);
       return waiting.length;
     },
     finish: () => {
@@ -510,6 +510,35 @@ async function runToNavigationStarted(harness: Harness): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------------------------
+
+test("reconnect retires a pending capture and the next press starts a fresh conversation", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.finish());
+  await startConversation(harness);
+  await harness.say("old-menu", "请读一下菜单");
+  const oldTag = harness.captureArms().at(-1);
+  const oldSession = harness.eventResults.find(message => message.id === "button-0")?.payload.sessionId;
+  assert.ok(oldTag);
+  assert.ok(oldSession);
+
+  // 与手机重新连接时发送的信封相同，清掉 Agent 仍在等待的旧拍照窗口。
+  harness.deliver("reconnect", "native.device", { kind: "disconnected", reason: "重新连接" });
+  await harness.settle();
+  const oldVoiceCount = harness.voiceArms().length;
+  await startConversation(harness);
+  assert.equal(harness.voiceArms().length, oldVoiceCount + 1);
+  const newSession = harness.eventResults.filter(message => message.id === "button-0").at(-1)?.payload.sessionId;
+  assert.ok(newSession);
+  assert.notEqual(newSession, oldSession);
+
+  // 旧连接迟到的确认和照片不能落入新会话。
+  harness.deliver("late-confirm", "native.device", { kind: "event", type: "entrance.confirm", payload: oldTag });
+  harness.deliver("late-photo", "native.photo", { tag: oldTag, mediaRef: MENU_MEDIA_REF });
+  await harness.settle();
+  assert.equal(harness.visionRequests.length, 0);
+  assert.deepEqual(harness.errors, []);
+  assertBridgeSettled(harness);
+});
 
 test("golden loop: a spoken destination, a spoken choice and a spoken request to look at the entrance", async (t) => {
   const harness = await createHarness();
@@ -652,6 +681,61 @@ test("a first utterance that is not about navigation is answered without touchin
     "each utterance is planned as its own turn, and a ToolResult is an Event of its own");
   assert.ok(String(harness.modelPrompts[1]!.payload.prompt).includes("现在能帮我做什么"),
     "the second turn must carry the bounded conversation trace");
+  assertBridgeSettled(harness);
+});
+
+test("cloud authentication failure is spoken once without retry and the next conversation turn survives", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.finish());
+  await startConversation(harness);
+  harness.hold("model.generate", 1);
+  await harness.say("cloud-failed-turn", "你刚才说你叫什么");
+  assert.equal(harness.answer("model.generate", undefined, "cloud_auth"), 1);
+  await harness.settle();
+  assert.equal(harness.modelPrompts.length, 1);
+  assert.equal(harness.speechTexts().at(-1), "DeepSeek 密钥不可用，请在手机的对话模型设置中检查。");
+  assert.equal(harness.toolCalls.length, 0);
+  assert.equal(harness.captureArms().length, 0);
+  await harness.say("next-turn", "你好");
+  assert.equal(harness.modelPrompts.length, 2);
+  assert.equal(harness.speechTexts().at(-1), HELP_SPEECH);
+  assertBridgeSettled(harness);
+});
+
+test("camera confirmation waits for a spoken prompt longer than three seconds before arming", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.finish());
+  await startConversation(harness);
+  harness.hold("speech.say", 1);
+  await harness.say("slow-camera-question", "帮我看看入口");
+  assert.equal(harness.captureArms().length, 0);
+  await new Promise(resolve => setTimeout(resolve, 3200));
+  await harness.settle();
+  assert.equal(harness.modelPrompts.length, 1, "still playing the question; no failed ToolResult should be replanned");
+  assert.equal(harness.answer("speech.say", { finished: true }), 1);
+  await harness.settle();
+  assert.equal(harness.captureArms().length, 1);
+  assert.equal(harness.visionRequests.length, 0, "opening a capture window does not take or inspect a photo");
+  assertBridgeSettled(harness);
+});
+
+test("the real planner's camera example opens only a confirmation window and reports tool success", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.finish());
+  await startConversation(harness);
+  harness.hold("model.generate", 1);
+  await harness.say("camera-example", "请准备拍照");
+  const prompt = String(harness.modelPrompts[0]!.payload.prompt);
+  const exampleLine = prompt.split("\n").find(line => line.startsWith("拍照准备示例："));
+  assert.ok(exampleLine);
+  const example = exampleLine.slice("拍照准备示例：".length);
+  assert.equal(harness.answer("model.generate", example), 1);
+  await harness.settle();
+  assert.equal(harness.captureArms().length, 1);
+  assert.equal(harness.visionRequests.length, 0);
+  const result = harness.eventResults.find(message => message.id === "camera-example");
+  assert.ok(result?.payload.toolResults.some((entry: { toolId: string; status: string }) =>
+    entry.toolId === "speech.ask_user" && entry.status === "succeeded"));
   assertBridgeSettled(harness);
 });
 

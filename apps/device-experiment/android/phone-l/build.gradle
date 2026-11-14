@@ -15,14 +15,15 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode speechEnabled ? 7 : gemmaEnabled ? 6 : 3
-        versionName speechEnabled ? '0.4.2' : gemmaEnabled ? '0.3.1' : '0.2.1'
+        versionCode 9
+        versionName '0.5.1'
         buildConfigField 'boolean', 'GEMMA_ENABLED', gemmaEnabled.toString()
         buildConfigField 'boolean', 'SPEECH_ENABLED', speechEnabled.toString()
-        ndk { abiFilters 'arm64-v8a' }
         def sourceRevision = providers.gradleProperty('leqiSourceRevision').getOrElse('unknown')
         if (!(sourceRevision ==~ /[0-9a-f]{7,40}|unknown/)) throw new GradleException('Invalid leqiSourceRevision')
         buildConfigField 'String', 'SOURCE_REVISION', '"' + sourceRevision + '"'
+        manifestPlaceholders = [amapAndroidKey: providers.gradleProperty('amapAndroidKey').getOrElse('')]
+        ndk { abiFilters 'arm64-v8a' }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -30,7 +31,11 @@ android {
     }
     buildFeatures { buildConfig = true }
     // Lossless compression reduces download size; full multimodal releases may need transport parts.
-    androidResources { if (!speechEnabled) noCompress += ['modelpart'] }
+    androidResources { if (!speechEnabled && !providers.gradleProperty('cxrlModelApk').isPresent()) noCompress += ['modelpart'] }
+    testOptions.unitTests.all {
+        // Robolectric 不展开 Maven settings.xml 中的 ${user.home}；使用确定的本地缓存路径。
+        systemProperty 'maven.repo.local', new File(gradle.gradleUserHomeDir, 'caches/robolectric').absolutePath
+    }
 }
 
 kotlin {
@@ -43,6 +48,7 @@ kotlin {
 dependencies {
     implementation 'com.rokid.cxr:client-l:1.1.2'
     implementation project(':gemma-runtime')
+    implementation 'com.amap.api:navi-3dmap-location-search:11.3.100_3dmap11.3.100_loc11.3.000_sea9.8.1'
     implementation files(rootProject.file('../../phone-companion/android/libs/sherpa-onnx-1.13.8.aar'))
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.16'
@@ -130,3 +136,82 @@ tasks.register('prepareSpeechAssets') {
 }
 android.sourceSets.main.assets.srcDir(generatedSpeechAssets)
 tasks.named('preBuild').configure { dependsOn 'prepareSpeechAssets' }
+
+// 由源码生成资源，手机端与 CXR-L 端始终执行同一份仓库 Agent。
+def repoRoot = rootProject.file('../../..')
+def agentAssets = layout.buildDirectory.dir('generated/agentAssets')
+android.sourceSets.main.assets.srcDir(agentAssets)
+tasks.register('bundleAgent', Exec) {
+    inputs.files(fileTree(repoRoot) {
+        include 'apps/phone-companion/src/**/*.ts'
+        include 'packages/**/*.ts'
+        include 'packages/**/*.json'
+        include 'tools/build-mobile-agent.mjs'
+        include 'apps/phone-companion/android/src/main/assets/agent/index.html'
+        exclude '**/node_modules/**'
+    })
+    outputs.dir(agentAssets)
+    commandLine 'node', new File(repoRoot, 'tools/build-mobile-agent.mjs').absolutePath,
+        '--outdir', new File(agentAssets.get().asFile, 'agent').absolutePath
+}
+tasks.named('preBuild').configure { dependsOn 'bundleAgent' }
+
+// 只共享设备适配器；不引入旧蓝牙宿主或第二套任务状态机。
+def sharedSources = layout.buildDirectory.dir('generated/sharedSources')
+android.sourceSets.main.java.srcDir(sharedSources)
+tasks.register('syncAgentPorts', Sync) {
+    from('../common/src/main/java') { include 'com/leqi/experiment/CxrlInputGate.kt' }
+    from('../../../phone-companion/android/src/main/java') {
+        include 'com/leqi/experiment/phonebt/AgentRuntimeWebView.kt'
+        include 'com/leqi/experiment/phonebt/AgentNavigationDevice.kt'
+        include 'com/leqi/experiment/phonebt/Amap*.kt'
+        include 'com/leqi/experiment/phonebt/PhoneLocationAdapter.kt'
+    }
+    into sharedSources
+}
+tasks.named('preBuild').configure { dependsOn 'syncAgentPorts' }
+
+// 从已经校验的交付 APK 流式提取模型，避免把权重或生成文件放进 Git。
+def modelAssets = layout.buildDirectory.dir('generated/runtimeModelAssets')
+android.sourceSets.main.assets.srcDir(modelAssets)
+tasks.register('prepareRuntimeAssets') {
+    def codeOnly = providers.gradleProperty('cxrlCodeOnly').map { it.toBoolean() }.getOrElse(gemmaCodeOnly)
+    def sourceApk = providers.gradleProperty('cxrlModelApk')
+    def manifest = providers.gradleProperty('cxrlModelManifest')
+    inputs.property('codeOnly', codeOnly)
+    if (sourceApk.isPresent()) inputs.file(sourceApk)
+    if (manifest.isPresent()) inputs.file(manifest)
+    outputs.dir(modelAssets)
+    doLast {
+        if (codeOnly) {
+            if (modelAssets.get().asFile.exists() && modelAssets.get().asFile.list().length > 0)
+                throw new GradleException('Use a separate build directory for a code-only build')
+            modelAssets.get().asFile.mkdirs()
+            return
+        }
+        if (!sourceApk.isPresent() || !manifest.isPresent())
+            throw new GradleException('Full APK requires -PcxrlModelApk and -PcxrlModelManifest; code-only: -PcxrlCodeOnly=true')
+        def expected = new groovy.json.JsonSlurper().parse(file(manifest.get()))
+        def apk = file(sourceApk.get())
+        if (apk.length() != expected.apk_bytes) throw new GradleException('Model APK size mismatch')
+        def digest = java.security.MessageDigest.getInstance('SHA-256')
+        apk.withInputStream { input ->
+            byte[] bytes = new byte[1024 * 1024]
+            int count
+            while ((count = input.read(bytes)) > 0) digest.update(bytes, 0, count)
+        }
+        if (digest.digest().encodeHex().toString() != expected.apk_sha256)
+            throw new GradleException('Model APK checksum mismatch')
+        copy {
+            // 许可文件沿用主分支的 src/main/assets/licenses，避免同名资源重复。
+            from(zipTree(apk)) { include 'assets/gemma/**', 'assets/speech/**' }
+            into modelAssets
+            eachFile { details -> details.path = details.path.substring('assets/'.length()) }
+            includeEmptyDirs = false
+        }
+        if (!new File(modelAssets.get().asFile, 'speech/manifest.json').isFile() ||
+            !new File(modelAssets.get().asFile, 'gemma/manifest.json').isFile())
+            throw new GradleException('Source APK has no complete model manifests')
+    }
+}
+tasks.named('preBuild').configure { dependsOn 'prepareRuntimeAssets' }

@@ -3,13 +3,14 @@ import type { SpeechEffect } from "../../../../packages/domain/reminder/navigati
 
 export interface SpeechQueueOptions {
   /** Speaks one utterance on the device and resolves once playback finished. */
-  speak(effect: SpeechEffect): Promise<boolean>;
+  speak(effect: SpeechEffect, local: boolean): Promise<boolean>;
   now?: () => Date;
   ttlMs?: number;
   idFactory?: () => string;
 }
 
 interface Queued extends SpeechEffect {
+  local: boolean;
   settle(finished: boolean): void;
 }
 
@@ -39,7 +40,7 @@ export class SpeechQueue {
     this.options = options;
   }
 
-  enqueue(text: string, priority: SpeechEffect["priority"], sessionId: string): Promise<boolean> {
+  enqueue(text: string, priority: SpeechEffect["priority"], sessionId: string, local = false): Promise<boolean> {
     const now = this.options.now ?? (() => new Date());
     const idFactory = this.options.idFactory ?? (() => crypto.randomUUID());
     const effect: SpeechEffect = {
@@ -54,7 +55,7 @@ export class SpeechQueue {
       repeatable: true,
     };
     return new Promise<boolean>((resolve) => {
-      this.pending.set(effect.effect_id, { ...effect, settle: resolve });
+      this.pending.set(effect.effect_id, { ...effect, local, settle: resolve });
       this.policy.enqueue(effect);
       void this.drain();
     });
@@ -129,7 +130,7 @@ export class SpeechQueue {
         if (!queued) continue;
         let finished = false;
         try {
-          finished = await this.options.speak(next);
+          finished = await this.options.speak(next, queued.local);
         } catch {
           finished = false;
         }

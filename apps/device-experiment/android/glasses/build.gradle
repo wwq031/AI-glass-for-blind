@@ -10,14 +10,26 @@ android {
         applicationId 'com.leqi.experiment.glasses'
         minSdk 32
         targetSdk 32
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.5.0'
+        ndk { abiFilters 'arm64-v8a' }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
     sourceSets.main.java.srcDirs += '../common/src/main/java'
+    sourceSets.test.java.srcDir(layout.buildDirectory.dir('generated/inputTests'))
 }
 
-dependencies { implementation 'com.rokid.cxr:cxr-service-bridge:1.4' }
+dependencies {
+    implementation 'com.rokid.cxr:cxr-service-bridge:1.4'
+    testImplementation 'junit:junit:4.13.2'
+}
+tasks.register('syncInputTests', Sync) {
+    from('../phone-l/src/test/java') { include '**/CxrlInputGateTest.kt' }
+    into layout.buildDirectory.dir('generated/inputTests')
+}
+tasks.matching { it.name == 'preDebugUnitTestBuild' }.configureEach { dependsOn 'syncInputTests' }
+tasks.matching { it.name.startsWith('compile') && it.name.endsWith('UnitTestKotlin') }
+    .configureEach { dependsOn 'syncInputTests' }
