@@ -105,15 +105,18 @@ class GlassesActivity : Activity() {
         }
         if (diagnosticOnly) return
         when (type) {
-            "voice.arm", "voice.disarm", "entrance.arm", "entrance.disarm" -> {
+            "voice.arm", "voice.ready", "voice.disarm", "entrance.arm", "entrance.disarm" -> {
                 gate.arm(type, payload, SystemClock.elapsedRealtime())
                 if (type == "voice.arm" || type == "entrance.arm") {
                     main.postDelayed({
                         gate.expire(SystemClock.elapsedRealtime())?.let { event(it.first, it.second) }
                     }, if (type == "voice.arm") 90001L else 120001L)
                 }
-                if (type.endsWith("arm") && !type.endsWith("disarm"))
-                    text.text = if (type.startsWith("voice")) "按键开始说话" else "按键确认本次拍照"
+                when (type) {
+                    "voice.ready" -> text.text = "短按左键说话，说完再短按"
+                    "voice.arm" -> text.text = "短按左键开始说话"
+                    "entrance.arm" -> text.text = "短按左键确认拍照"
+                }
             }
             "task.cancel" -> { reset(); text.text = "任务已取消，短按可重新开始" }
             "voice.started" -> { recording = true; text.text = "正在听，请说话；短按结束" }
@@ -169,7 +172,9 @@ class GlassesActivity : Activity() {
     private fun cancelFromUser() { reset(); event("user.cancel", "long-press"); text.text = "已取消" }
     private fun event(type: String, payload: String = "") {
         if (link.isBlank()) return
-        val json = JSONObject().put("link", link).put("sequence", ++sequence).put("type", type).put("payload", payload).toString()
+        val packet = JSONObject().put("link", link).put("sequence", ++sequence).put("type", type).put("payload", payload)
+        if (type == "probe.glasses") packet.put("followUp", true)
+        val json = packet.toString()
         val sent = bridge.sendMessage("rk_custom_key", Caps().apply { write(json) }, json.toByteArray())
         if (diagnosticOnly) Log.d("Rgr06Cxrl", "tx sequence=$sequence type=$type result=$sent")
     }

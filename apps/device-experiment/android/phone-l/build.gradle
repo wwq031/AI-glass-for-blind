@@ -10,8 +10,8 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode 13
-        versionName '0.8.1'
+        versionCode 14
+        versionName '0.8.2'
         buildConfigField 'boolean', 'DEVELOPER_TOOLS', providers.gradleProperty('leqiDeveloperTools').map { it.toBoolean().toString() }.getOrElse('false')
         def sourceRevision = providers.gradleProperty('leqiSourceRevision').getOrElse('unknown')
         if (!(sourceRevision ==~ /[0-9a-f]{7,40}|unknown/)) throw new GradleException('Invalid leqiSourceRevision')

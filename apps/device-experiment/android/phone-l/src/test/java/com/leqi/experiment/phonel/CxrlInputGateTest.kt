@@ -16,6 +16,19 @@ class CxrlInputGateTest {
         gate.cancel()
         assertNull(gate.press(104))
     }
+    @Test fun idleConversationWaitsForOnePressAndYieldsToAnExplicitPhotoWindow() {
+        val gate = CxrlInputGate()
+        gate.arm("voice.ready", "follow-1", 0)
+        assertNull(gate.expire(3600000))
+        assertEquals("voice.confirm" to "follow-1", gate.press(3600001))
+        assertNull(gate.press(3600002))
+        gate.arm("voice.ready", "follow-2", 3600003)
+        gate.arm("entrance.arm", "photo", 3600004)
+        assertEquals("entrance.confirm" to "photo", gate.press(3600005))
+        gate.arm("voice.ready", "follow-3", 3600006)
+        gate.cancel()
+        assertNull(gate.press(3600007))
+    }
     @Test fun expiredWindowReportsExpiryAndNeverConfirmsCapture() {
         val gate = CxrlInputGate()
         gate.arm("entrance.arm", "photo", 0)

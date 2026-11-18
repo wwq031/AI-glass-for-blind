@@ -223,7 +223,7 @@ class CxrlAgentService : Service() {
                 }
                 "error" -> {
                     diagnostic("agent.error", "id=$id detail=${message.optString("error")}")
-                    GuideSession.show(GuideSession.state.copy(phase = "本轮任务未完成，请按眼镜提示重试。"))
+                    if (device.ready) playbackPhase("本轮任务未完成，请按键重试。")
                     status("本轮任务未完成，请检查手机提示后重试")
                 }
                 "event.result" -> diagnostic("event.result", "id=$id rejection=${payload.optJSONObject("rejection")?.optString("code")} tools=${payload.optJSONArray("toolResults")}")
@@ -238,8 +238,11 @@ class CxrlAgentService : Service() {
         val tag = request.optString("payload")
         when (type) {
             "task.cancel" -> retire(notifyDevice = false)
-            "voice.arm" -> { check(microphone == null && photoCallback == null); voiceTag = tag; photoTag = null
-                GuideSession.show(GuideSession.state.copy(phase = "请短按眼镜开始录音。")) }
+            "voice.arm", "voice.ready" -> {
+                check(microphone == null && photoCallback == null)
+                voiceTag = tag; photoTag = null
+                GuideSession.show(GuideSession.state.copy(phase = if (type == "voice.ready") "短按左键说话，说完再短按" else "短按左键开始说话"))
+            }
             "entrance.arm" -> { check(microphone == null && photoCallback == null); photoTag = tag; voiceTag = null
                 GuideSession.show(GuideSession.state.copy(phase = "将眼镜朝向目标，短按确认拍照。")) }
             "voice.disarm" -> { voiceTag = null; stopRecording(false) }
@@ -268,7 +271,7 @@ class CxrlAgentService : Service() {
                 device.command("status", if (cloudConfigured) "准备好了，短按开始；结束请在手机点停止任务与连接" else "正在读取 DeepSeek 配置，请稍候")
                 return
             }
-            "play.received" -> { if (plays.containsKey(tag)) GuideSession.show(GuideSession.state.copy(phase = "眼镜正在播报…")); return } // 收齐音频后眼镜开始播放，完成以 play.done 为准。
+            "play.received" -> { if (plays.containsKey(tag)) playbackPhase("正在播报…"); return } // 收齐音频后眼镜开始播放，完成以 play.done 为准。
             "play.done", "play.failed" -> {
                 diagnostic(type, "playId=$tag")
                 plays.remove(tag)?.invoke(type == "play.done"); return
@@ -290,7 +293,9 @@ class CxrlAgentService : Service() {
                 capture(tag); return
             }
         }
-        envelope("native.device", JSONObject().put("kind", "event").put("type", type).put("payload", tag))
+        val event = JSONObject().put("kind", "event").put("type", type).put("payload", tag)
+        if (type == "probe.glasses") event.put("followUp", packet.optBoolean("followUp"))
+        envelope("native.device", event)
     }
 
     private fun startRecording(tag: String) {
@@ -417,6 +422,19 @@ class CxrlAgentService : Service() {
         photoCallback = null; photoSession = null; photoTag = null
     }
 
+    private fun playbackPhase(message: String) {
+        // 导航播报可能穿插在拍照确认或录音中；设备当前允许的动作始终优先显示。
+        val phase = when {
+            microphone != null -> return
+            photoCallback != null -> return
+            photoTag != null -> "短按左键确认拍照"
+            voiceTag != null -> "短按左键说话，说完再短按"
+            else -> message
+        }
+        GuideSession.show(GuideSession.state.copy(phase = phase))
+        device.command("status", phase)
+    }
+
     private fun say(text: String, completed: (Boolean) -> Unit) {
         if (!device.ready || !cloudConfigured || utterance != null) { completed(false); return }
         val attempt = generation
@@ -429,8 +447,7 @@ class CxrlAgentService : Service() {
             play = { audio, done -> sendAudio(audio, attempt, speechId, done) },
             completed = { ok ->
                 utterance = null
-                if (!closed && attempt == generation) GuideSession.show(GuideSession.state.copy(
-                    phase = if (ok) "播报完成，请按眼镜提示继续。" else "播报未完成，请重新开始。"))
+                if (!closed && attempt == generation) playbackPhase(if (ok) "播报完成" else "播报未完成，请重试")
                 if (!ok) {
                     // 合成失败或取消后，旧播放回执和超时不能影响下一轮任务。
                     plays.clear()

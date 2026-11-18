@@ -755,6 +755,28 @@ test("a refused candidate is never started, and a second search replaces the fir
   assertBridgeSettled(harness);
 });
 
+test("导航中答完自动待命；一次语音窗口可直接追问且路线持续", async (t) => {
+  const harness = await createHarness();
+  t.after(() => harness.finish());
+  harness.deliver("open", "native.device", { kind: "event", type: "probe.glasses", payload: "sprite-button-click", followUp: true });
+  await harness.settle();
+  const ready = () => harness.deviceSends.filter(m => m.payload?.type === "voice.ready");
+  await harness.say("destination", "请带我去人民公园");
+  assert.equal(ready().length, 0, "目的地确认须保留原来的录音窗口");
+  await harness.say("confirm", "第一个");
+  assert.equal(ready().length, 1);
+  const route = harness.liveSessionId();
+  harness.deliver("question", "native.speech", { purpose: ready()[0]!.payload.payload, transcript: "现在能帮我做什么" });
+  await harness.settle();
+  assert.equal(harness.speechTexts().at(-1), HELP_SPEECH);
+  assert.equal(ready().length, 2);
+  assert.notEqual(ready()[0]!.payload.payload, ready()[1]!.payload.payload);
+  assert.equal(harness.navigationStarts.length, 1);
+  assert.equal(harness.liveSessionId(), route);
+  assert.equal(harness.sent.filter(m => m.type === "policy.navigation.stop").length, 0);
+  assertBridgeSettled(harness);
+});
+
 test("a mid-route question is answered from real facts and never restarts the route", async (t) => {
   const harness = await createHarness();
   t.after(() => harness.finish());

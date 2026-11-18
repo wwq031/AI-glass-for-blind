@@ -8,6 +8,7 @@ export interface NativeDevicePayload {
   payload?: string;
   reason?: string;
   weak?: boolean;
+  followUp?: boolean;
 }
 
 /**

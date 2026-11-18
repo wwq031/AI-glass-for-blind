@@ -8,11 +8,15 @@ class CxrlInputGate {
 
     fun arm(command: String, payload: String, now: Long) {
         when (command) {
-            "voice.arm", "entrance.arm" -> {
+            "voice.arm", "voice.ready", "entrance.arm" -> {
                 require(payload.isNotBlank() && payload.length <= 256)
                 type = command.substringBefore('.')
                 tag = payload
-                deadline = now + if (type == "voice") 90000L else 120000L
+                deadline = when (command) {
+                    "voice.ready" -> Long.MAX_VALUE
+                    "voice.arm" -> now + 90000L
+                    else -> now + 120000L
+                }
             }
             "voice.disarm" -> if (type == "voice") cancel()
             "entrance.disarm" -> if (type == "entrance") cancel()

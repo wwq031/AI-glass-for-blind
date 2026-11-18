@@ -84,6 +84,7 @@ class OperationCancelled extends Error {
  * an operation that is already over.
  */
 let operationGeneration = 0;
+let supportsFollowUp = false;
 
 /** Bounded automatic recovery: past this many failed windows the conversation ends instead. */
 const AUTHORITY_RETRY_LIMIT = 3;
@@ -747,7 +748,7 @@ async function acceptEvent(message: Envelope): Promise<void> {
       toolResults.push(...output.results.map(result => ({
         toolId: result.toolId, status: result.status, errorCode: result.error?.code,
       })));
-      if (output.rejection?.code === "consent_required") requestCaptureForRejectedPlan();
+      if (output.rejection?.code === "consent_required") await requestCaptureForRejectedPlan();
       const feedback = output.followUpEvents;
       if (!feedback?.length) {
         send({ id: message.id, type: "event.result",
@@ -769,13 +770,13 @@ async function acceptEvent(message: Envelope): Promise<void> {
  * plan the model just proposed, so what the press authorises is what was on the table — and the
  * photo it produces still goes to the model, which decides what it means.
  */
-function requestCaptureForRejectedPlan(): void {
+async function requestCaptureForRejectedPlan(): Promise<void> {
   if (glasses.armedCaptureTag() || destinationCapture) return;
   const observing = activePlan?.actions.find((action) =>
     action.kind === "tool_call" && action.toolId === "observation.request");
   const capabilityId = observing?.kind === "tool_call" ? observing.arguments.capability_id : undefined;
   if (typeof capabilityId !== "string" || !capabilityId) return;
-  void toolRuntime.openQuestionWindow(
+  await toolRuntime.openQuestionWindow(
     "请按键拍摄，我来看看。", capabilityId, new Date(Date.now() + 30_000).toISOString());
 }
 
@@ -849,9 +850,10 @@ async function handleNativeDevice(message: Envelope): Promise<void> {
 async function handlePress(message: Envelope): Promise<void> {
   // A press the user makes while a capture window is open authorises that capture on the glasses
   // itself; it must not also open a recorder.
-  if (glasses.armedCaptureTag()) return;
+  if (glasses.armedCaptureTag() || (glasses.live && supportsFollowUp && glasses.armedVoicePurpose())) return;
   const generation = operationGeneration;
   if (!glasses.live) {
+    supportsFollowUp = (message.payload as NativeDevicePayload).followUp === true;
     const sessionId = glasses.start(`live-${Date.now()}-${++nextLiveSession}`);
     voiceRetryCount = 0;
     captureRetryCount = 0;
@@ -875,6 +877,18 @@ async function handlePress(message: Envelope): Promise<void> {
   // Already talking: a press just asks for the floor again.
   const purpose = glasses.armVoice();
   await nativeStep(generation, "device.send", { type: "voice.arm", payload: purpose });
+}
+
+// 普通回复结束后只准备一个可按键的入口；不会开麦，也不会在闲置时播报录音超时。
+async function prepareFollowUp(sessionId: string): Promise<void> {
+  if (!supportsFollowUp || glasses.sessionId !== sessionId || glasses.armedVoicePurpose() || glasses.armedCaptureTag()) return;
+  const purpose = glasses.armVoice();
+  try {
+    await nativeStep(operationGeneration, "device.send", { type: "voice.ready", payload: purpose });
+  } catch (error) {
+    if (glasses.matchesVoice(purpose)) glasses.closeVoice();
+    throw error;
+  }
 }
 
 /**
@@ -966,6 +980,7 @@ async function handleNativeSpeech(message: Envelope): Promise<void> {
     // The user's own words, verbatim. Nothing in this pipeline classifies them.
     transcript: native.transcript.trim(), input_kind: "voice", purpose: native.purpose,
   });
+  await prepareFollowUp(sessionId);
 }
 
 async function handleNativePhoto(message: Envelope): Promise<void> {
@@ -987,6 +1002,7 @@ async function handleNativePhoto(message: Envelope): Promise<void> {
   await acceptNativeEvent(message.id, sessionId, "user", "user.capture_confirmed", {
     input_kind: "button", capability_id: authorised.capabilityId,
   }, { observationConsent: "explicit" });
+  await prepareFollowUp(sessionId);
 }
 
 function queueNavigation(message: Envelope): void {
