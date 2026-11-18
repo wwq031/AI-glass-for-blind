@@ -4,12 +4,12 @@ import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** 当前 Melo 输出 44.1 kHz。先低通再降为 22.05 kHz，减少一半传输量且保持时长与音调。 */
+/** 对 24 kHz 和 44.1 kHz 语音先低通再二倍抽取，减少一半传输量且保持时长与音调。 */
 internal object SpeechTransportAudio {
     private const val HALF = 31
     private val filter = DoubleArray(HALF * 2 + 1) { index ->
         val offset = index - HALF
-        // 9.7 kHz 截止的窗化 sinc；在新的 Nyquist 频率之前留出过渡带，抑制混叠。
+        // 截止频率为输入采样率的 0.22 倍的窗化 sinc；在新的 Nyquist 频率之前留出过渡带，抑制混叠。
         val cutoff = 0.22
         val sinc = if (offset == 0) 2 * cutoff else sin(2 * PI * cutoff * offset) / (PI * offset)
         sinc * (0.54 - 0.46 * cos(2 * PI * index / (HALF * 2)))
@@ -19,7 +19,7 @@ internal object SpeechTransportAudio {
     }
 
     fun prepare(audio: SpeechAudio): SpeechAudio {
-        if (audio.sampleRate != 44100) return audio
+        if (audio.sampleRate != 44100 && audio.sampleRate != 24000) return audio
         val source = audio.samples
         val result = FloatArray((source.size + 1) / 2) { index ->
             val center = index * 2
@@ -30,6 +30,6 @@ internal object SpeechTransportAudio {
             }
             value.toFloat().coerceIn(-1f, 1f)
         }
-        return SpeechAudio(result, 22050)
+        return SpeechAudio(result, audio.sampleRate / 2)
     }
 }

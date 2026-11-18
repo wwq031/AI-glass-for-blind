@@ -15,7 +15,7 @@ export function modelFailureSpeech(error: unknown): string {
   switch (code) {
     case "cloud_auth": case "cloud_key_missing": case "cloud_key_unreadable":
       return "DeepSeek 密钥不可用，请在手机的对话模型设置中检查。";
-    case "cloud_balance": return "DeepSeek 余额不足，请检查账户，或在手机切回免费模式。";
+    case "cloud_balance": return "DeepSeek 余额不足，请检查账户余额后再试。";
     case "cloud_busy": return "DeepSeek 当前繁忙，请稍后再试。";
     case "cloud_timeout": return "DeepSeek 回答超时，请稍后再试。";
     case "cloud_network": return "暂时连不上 DeepSeek，请检查手机网络。";

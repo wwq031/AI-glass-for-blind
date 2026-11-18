@@ -30,7 +30,10 @@ class GlassesActivity : Activity() {
     private var header: JSONObject? = null
     @Volatile private var track: AudioTrack? = null
     private val playbackLock = Any()
+    private data class Clip(val id: String, val pcm: ByteArray, val rate: Int)
+    private var queued: Clip? = null
     private var playing = false
+    private var alertTone: ToneGenerator? = null
     private var lastClick = -1000L
     private var diagnosticOnly = false
     private fun audioDiagnostic(stage: String, detail: String) {
@@ -101,8 +104,16 @@ class GlassesActivity : Activity() {
             "voice.started" -> { recording = true; text.text = "正在听，请说话；短按结束" }
             "voice.stopped" -> { recording = false; text.text = "正在处理，请稍候" }
             "status" -> text.text = payload
+            "service.alert" -> {
+                text.text = payload
+                // 云合成不可用时，眼镜仍可发出一声短促的故障提示。
+                runCatching {
+                    val tone = alertTone ?: ToneGenerator(AudioManager.STREAM_MUSIC, 65).also { alertTone = it }
+                    tone.startTone(ToneGenerator.TONE_PROP_NACK, 280)
+                }
+            }
             "play.start" -> {
-                check(playback == null && !playing)
+                check(playback == null && queued == null)
                 val value = JSONObject(payload)
                 require(value.getInt("bytes") in 2..8640000 && value.getInt("bytes") % 2 == 0)
                 require(value.getInt("rate") in 8000..48000)
@@ -124,7 +135,9 @@ class GlassesActivity : Activity() {
                     MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it.toInt() and 255) } != value.getString("sha256")) {
                     event("play.failed", payload); return
                 }
-                play(payload, bytes, value.getInt("rate"))
+                val clip = Clip(payload, bytes, value.getInt("rate"))
+                if (playing) queued = clip else play(clip.id, clip.pcm, clip.rate)
+                event("play.received", payload)
             }
         }
     }
@@ -169,12 +182,18 @@ class GlassesActivity : Activity() {
             audioDiagnostic("play.complete", "playId=$id success=${outcome.isSuccess}")
             synchronized(playbackLock) { if (track === player) track = null }
             main.post {
-                if (attempt == generation) { playing = false; event(if (outcome.isSuccess) "play.done" else "play.failed", id) }
+                if (attempt == generation) {
+                    playing = false
+                    val next = queued
+                    queued = null
+                    if (outcome.isSuccess && next != null) play(next.id, next.pcm, next.rate)
+                    event(if (outcome.isSuccess) "play.done" else "play.failed", id)
+                }
             }
         }
     }
     private fun reset() {
-        gate.cancel(); recording = false; playback = null; header = null; playing = false
+        gate.cancel(); recording = false; playback = null; header = null; queued = null; playing = false
         synchronized(playbackLock) { generation++; runCatching { track?.pause() }; track = null }
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -210,5 +229,5 @@ class GlassesActivity : Activity() {
         return super.onKeyUp(code, event)
     }
     override fun onPause() { reset(); if (link.isNotBlank()) event("user.cancel", "glasses-paused"); super.onPause() }
-    override fun onDestroy() { reset(); link = ""; unregisterReceiver(receiver); super.onDestroy() }
+    override fun onDestroy() { reset(); alertTone?.release(); link = ""; unregisterReceiver(receiver); super.onDestroy() }
 }

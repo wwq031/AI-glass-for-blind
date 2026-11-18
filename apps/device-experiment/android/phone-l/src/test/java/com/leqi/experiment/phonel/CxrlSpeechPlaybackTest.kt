@@ -5,47 +5,51 @@ import org.junit.Test
 
 class CxrlSpeechPlaybackTest {
     private class Fixture {
-        val text = "第一段先播放给用户听。第二段继续说明回答的内容，第三段还应该保留更多文字，保证整段文字均被播报完成。"
-        val synthesized = mutableListOf<String>()
-        val synth = ArrayDeque<(SpeechAudio?) -> Unit>()
-        val play = ArrayDeque<(Boolean) -> Unit>()
-        val outcomes = mutableListOf<Boolean>()
-        var played = 0
-        val pipeline = CxrlSpeechPlayback({ part, done -> synthesized.add(part); synth.add(done) },
-            { _, done -> played++; play.add(done) }, { outcomes.add(it) })
-        fun ready() = synth.removeFirst()(SpeechAudio(floatArrayOf(0.1f), 16000))
+        val requests = mutableListOf<String>()
+        val played = mutableListOf<SpeechAudio>()
+        val results = mutableListOf<Boolean>()
+        lateinit var synthesized: (SpeechAudio?) -> Unit
+        lateinit var playbackDone: (Boolean) -> Unit
+        val pipeline = CxrlSpeechPlayback(
+            { text, done -> requests.add(text); synthesized = done },
+            { audio, done -> played.add(audio); playbackDone = done },
+            results::add,
+        )
+        val audio = SpeechAudio(floatArrayOf(0.25f), 12000)
     }
 
-    @Test fun firstPhrasePlaysEarlyPrefetchIsOneAndSuccessWaitsForLastPlayback() {
-        val f = Fixture(); f.pipeline.start(f.text)
-        assertEquals(1, f.synthesized.size); assertEquals(0, f.played)
-        f.ready()
-        assertEquals(1, f.played); assertEquals(2, f.synthesized.size)
-        f.ready()
-        assertEquals(1, f.played); assertTrue(f.synth.isEmpty())
-        assertTrue(f.outcomes.isEmpty())
-        while (f.play.isNotEmpty()) {
-            f.play.removeFirst()(true)
-            if (f.synth.isNotEmpty()) f.ready()
-        }
-        assertEquals(f.text, f.synthesized.joinToString(""))
-        assertEquals(f.synthesized.size, f.played)
-        assertEquals(listOf(true), f.outcomes)
+    @Test fun multiSentenceReplyUsesOneRequestAndOnePlayback() {
+        val f = Fixture()
+        val text = "眼前是一台笔记本电脑，屏幕亮着。桌子上方还有一盏长条形灯。"
+        f.pipeline.start(text)
+        assertEquals(listOf(text), f.requests)
+        f.synthesized(f.audio)
+        assertEquals(listOf(f.audio), f.played)
+        assertTrue(f.results.isEmpty())
+        f.playbackDone(true)
+        assertEquals(listOf(true), f.results)
     }
 
-    @Test fun cancelDiscardsPreparedAndLateAudioWithoutDoubleCompletion() {
-        val f = Fixture(); f.pipeline.start(f.text); f.ready()
-        f.pipeline.cancel(); f.ready(); f.play.removeFirst()(true); f.pipeline.cancel()
-        assertEquals(1, f.played); assertEquals(2, f.synthesized.size)
-        assertEquals(listOf(false), f.outcomes)
+    @Test fun cancellationDuringSynthesisDiscardsLateAudio() {
+        val f = Fixture(); f.pipeline.start("请稍候")
+        f.pipeline.cancel()
+        f.synthesized(f.audio)
+        assertTrue(f.played.isEmpty())
+        assertEquals(listOf(false), f.results)
     }
 
-    @Test fun synthesisAndDeviceFailureNeverReportWholeUtteranceSuccess() {
-        for (synthesisFailure in listOf(true, false)) {
-            val f = Fixture(); f.pipeline.start(f.text); f.ready()
-            if (synthesisFailure) { f.synth.removeFirst()(null); f.play.removeFirst()(true) }
-            else { f.play.removeFirst()(false); f.ready() }
-            assertEquals(1, f.played); assertEquals(listOf(false), f.outcomes)
-        }
+    @Test fun cancellationDuringPlaybackIgnoresLateReceipt() {
+        val f = Fixture(); f.pipeline.start("请稍候"); f.synthesized(f.audio)
+        f.pipeline.cancel(); f.playbackDone(true)
+        assertEquals(listOf(false), f.results)
+    }
+
+    @Test fun synthesisOrPlaybackFailureIsReported() {
+        val first = Fixture(); first.pipeline.start("请稍候"); first.synthesized(null)
+        assertTrue(first.played.isEmpty())
+        assertEquals(listOf(false), first.results)
+        val second = Fixture(); second.pipeline.start("请稍候"); second.synthesized(second.audio)
+        second.playbackDone(false)
+        assertEquals(listOf(false), second.results)
     }
 }

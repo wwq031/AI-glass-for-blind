@@ -22,11 +22,11 @@
 
 ## 手机独立运行与 DeepSeek 对话
 
-手机正式入口新增“对话模型与费用设置”：默认使用免费本地模型；需要 DeepSeek 时，在手机填写自己的 API Key 并开启开关，然后重新连接眼镜。手机直接访问官方 API，无需电脑或服务器。默认云端模型为 `deepseek-flash`，也可选择 `deepseek-v4-pro`。API 按用量收费，详见 [DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/)。
+当前分支的 `phone-l` 使用纯云端模式。在手机的「对话模型与费用设置」中填写 DeepSeek API Key，再点「授权并连接眼镜」。手机直接通过网络调用 DeepSeek，默认对话模型为 `deepseek-flash`，也可选择 `deepseek-v4-pro`。云服务按用量计费。[DeepSeek 官方价格](https://api-docs.deepseek.com/quick_start/pricing/)
 
-语音识别、播报和图片识别继续在手机本地运行。播报按句播放，播放时预合成下一句；完成整段播放后才报告成功。密钥加密保存在手机应用私有空间，开关与密钥可在设置页清除。开启云端后，对话文字、历史和必要任务上下文会发往 DeepSeek。
+语音识别、对话、图片识别、OCR 和语音合成使用 DeepSeek。录音、确认拍摄的照片、对话上下文和播报文字按对应功能发送。手机用 Android Keystore 保护凭据，可在设置页清除。每条回答整段合成，眼镜播完后回传完成状态。合成失败时，配套眼镜端用提示音提醒，并显示原因。
 
-已完成测试和 APK 构建，并实测通过 DeepSeek 连续对话、按键确认拍照、看图播报及同一会话追问。播报仍有停顿，重复连接崩溃已复现且待修复；最初一次尾句截断在后续测试中未复现，原因仍待定位。安装步骤、实测证据和后续工作见 [最新集成说明](docs/handoff/2026-11-04-cxrl-agent-integration.md)。
+步行导航使用高德 Android SDK。首次使用时在「高德导航设置」中授予定位权限，可以用地点名称自检。自检页显示本机 APK 的包名和签名 SHA-1。新旧包可在被 Git 忽略的根目录 `.env` 中分别配置 `AMAP_ANDROID_KEY_PHONEL` 和 `AMAP_ANDROID_KEY_PHONEBT`；只构建一个包时也可沿用 `AMAP_ANDROID_KEY`。配置后重新打包。高德地图客户端可通过自检页单独打开搜索，眼镜内导航以 SDK 搜索、用户确认和算路成功为准。
 
 ## 第一条完整流程
 

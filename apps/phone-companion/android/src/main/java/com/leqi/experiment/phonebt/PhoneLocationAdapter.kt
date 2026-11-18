@@ -13,6 +13,8 @@ import com.amap.api.location.AMapLocation
 import com.amap.api.location.AMapLocationClient
 import com.amap.api.location.AMapLocationClientOption
 import com.amap.api.location.AMapLocationListener
+import com.amap.api.location.CoordinateConverter
+import com.amap.api.location.DPoint
 import java.util.Locale
 
 /**
@@ -50,7 +52,14 @@ object PhoneLocationAdapter {
         val longitude: Double,
         val accuracyM: Float,
         val ageMs: Long,
+        private val wgs84: Boolean = false,
     ) {
+        /** 只在已获导航授权、即将调用高德 SDK 时转换系统定位；高德坐标保持原值。 */
+        fun amapPoint(context: Context): DPoint {
+            val point = DPoint(latitude, longitude)
+            if (!wgs84 || !CoordinateConverter.isAMapDataAvailable(latitude, longitude)) return point
+            return checkNotNull(CoordinateConverter(context).from(CoordinateConverter.CoordType.GPS).coord(point).convert())
+        }
         /** 送给眼镜的定位事件负载。 */
         fun wirePayload(): String =
             String.format(Locale.ROOT, "%.6f,%.6f,%.1f,%d", latitude, longitude, accuracyM, ageMs)
@@ -229,7 +238,7 @@ object PhoneLocationAdapter {
             }
             val code = location.getErrorCode()
             if (code != 0) {
-                reject("高德", "错误码 " + code + " " + text(location.getErrorInfo()))
+                reject("高德", "错误码 $code")
                 askNextProvider()
                 return
             }
@@ -251,6 +260,7 @@ object PhoneLocationAdapter {
                     // 高德不给“有没有精度”这个开关，0 就是没有。
                     accuracy > 0f,
                     ageMs,
+                    wgs84 = location.coordType == AMapLocation.COORD_TYPE_WGS84,
                 ),
             )
         }
@@ -315,7 +325,7 @@ object PhoneLocationAdapter {
             val ageMs = maxOf(0L, (SystemClock.elapsedRealtimeNanos() - nanos) / 1_000_000)
             deliver(
                 label,
-                judge(location.latitude, location.longitude, location.accuracy, location.hasAccuracy(), ageMs),
+                judge(location.latitude, location.longitude, location.accuracy, location.hasAccuracy(), ageMs, wgs84 = true),
             )
         }
 
@@ -340,6 +350,7 @@ object PhoneLocationAdapter {
             accuracyM: Float,
             hasAccuracy: Boolean,
             ageMs: Long,
+            wgs84: Boolean,
         ): Verdict {
             // (0,0)、越界和 NaN 都是“其实没有定位”的常见写法，不能拿去当搜索和导航的起点。
             if (!isUsableCoordinate(latitude, longitude)) return Verdict.Rejected("坐标不可用")
@@ -350,7 +361,7 @@ object PhoneLocationAdapter {
             if (accuracyM > PhoneLocationAdapter.MAX_ACCURACY_M) {
                 return Verdict.Rejected("精度不足（" + Math.round(accuracyM) + " 米）")
             }
-            return Verdict.Ok(PhoneLocationAdapter.Fix(latitude, longitude, accuracyM, ageMs))
+            return Verdict.Ok(PhoneLocationAdapter.Fix(latitude, longitude, accuracyM, ageMs, wgs84))
         }
 
         /** 高德和系统都会在无坐标时给出 (0,0) 或越界值，这类结果不能拿去算路线。 */
@@ -379,7 +390,6 @@ object PhoneLocationAdapter {
         private fun describeRejections(): String =
             if (rejections.isEmpty()) "" else "：" + rejections.joinToString("；")
 
-        private fun text(value: String?): String = if (value.isNullOrEmpty()) "无说明" else value
 
         /** 给已经失败的原因定个名，方便用户和日志对上号。 */
         private fun providerLabel(provider: String): String = when (provider) {

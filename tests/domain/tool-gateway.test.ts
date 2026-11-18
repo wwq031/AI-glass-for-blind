@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   ToolGateway,
+  ToolFailure,
   type ToolCall,
   type ToolDefinition,
   type ToolHandler,
@@ -71,6 +72,20 @@ test("reuses the same result for an idempotency key", async () => {
   assert.equal(executions, 1);
   assert.equal(second, first);
   assert.equal(toolGateway.auditLog.at(-1)?.decision, "cached");
+});
+
+test("keeps the actionable map failure while ordinary exceptions stay private", async () => {
+  const message = "高德未通过应用校验，请核对包名和签名。";
+  const expected = await gateway(async () => {
+    throw new ToolFailure("navigation_not_configured", message, false);
+  }).execute(call(), "entrance_check");
+  assert.equal(expected.status, "failed");
+  assert.equal(expected.error?.code, "navigation_not_configured");
+  assert.equal(expected.error?.message, message);
+  assert.equal(expected.error?.retryable, false);
+  const unexpected = await gateway(async () => { throw new Error("private detail"); })
+    .execute(call(), "entrance_check");
+  assert.equal(unexpected.error?.message, "Tool handler failed.");
 });
 
 test("denies invalid state, missing consent, origin, and arguments", async () => {

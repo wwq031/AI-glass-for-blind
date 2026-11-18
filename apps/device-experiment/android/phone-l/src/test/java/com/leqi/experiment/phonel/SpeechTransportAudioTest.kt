@@ -34,6 +34,14 @@ class SpeechTransportAudioTest {
         assertTrue(rms(converted.samples) < rms(original.samples) * 0.01)
     }
 
+    @Test fun cloudSpeechHalvesWireSizeAndKeepsDurationAndVoiceBand() {
+        val input = SpeechAudio(FloatArray(24000) { (0.4 * sin(2 * PI * 3000 * it / 24000)).toFloat() }, 24000)
+        val output = SpeechTransportAudio.prepare(input)
+        assertEquals(12000, output.sampleRate)
+        assertEquals(12000, output.samples.size)
+        assertEquals(rms(input.samples), rms(output.samples), 0.005)
+    }
+
     @Test fun oddLengthKeepsTailAndImpulseTimingWithoutMutatingInput() {
         val source = FloatArray(44101)
         source[22050] = 0.5f

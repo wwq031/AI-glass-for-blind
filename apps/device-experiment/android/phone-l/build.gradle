@@ -3,11 +3,6 @@ plugins {
     id 'org.jetbrains.kotlin.android'
 }
 
-def gemmaEnabled = providers.gradleProperty('cxrlGemma').map { it.toBoolean() }.getOrElse(false)
-def gemmaCodeOnly = providers.gradleProperty('gemmaCodeOnly').map { it.toBoolean() }.getOrElse(false)
-def speechEnabled = providers.gradleProperty('cxrlSpeech').map { it.toBoolean() }.getOrElse(false)
-if (speechEnabled && !gemmaEnabled) throw new GradleException('Speech dialogue requires -PcxrlGemma=true')
-
 android {
     namespace 'com.leqi.experiment.phonel'
     compileSdk { version = release(36) { it.minorApiLevel = 1 } }
@@ -15,14 +10,12 @@ android {
         applicationId 'com.leqi.experiment.phonel'
         minSdk 31
         targetSdk 35
-        versionCode 9
-        versionName '0.5.1'
-        buildConfigField 'boolean', 'GEMMA_ENABLED', gemmaEnabled.toString()
-        buildConfigField 'boolean', 'SPEECH_ENABLED', speechEnabled.toString()
+        versionCode 10
+        versionName '0.6.0'
         def sourceRevision = providers.gradleProperty('leqiSourceRevision').getOrElse('unknown')
         if (!(sourceRevision ==~ /[0-9a-f]{7,40}|unknown/)) throw new GradleException('Invalid leqiSourceRevision')
         buildConfigField 'String', 'SOURCE_REVISION', '"' + sourceRevision + '"'
-        manifestPlaceholders = [amapAndroidKey: providers.gradleProperty('amapAndroidKey').getOrElse('')]
+        manifestPlaceholders = [amapAndroidKey: rootProject.amapKeyFor('PHONEL')]
         ndk { abiFilters 'arm64-v8a' }
     }
     compileOptions {
@@ -30,8 +23,6 @@ android {
         targetCompatibility JavaVersion.VERSION_17
     }
     buildFeatures { buildConfig = true }
-    // Lossless compression reduces download size; full multimodal releases may need transport parts.
-    androidResources { if (!speechEnabled && !providers.gradleProperty('cxrlModelApk').isPresent()) noCompress += ['modelpart'] }
     testOptions.unitTests.all {
         // Robolectric 不展开 Maven settings.xml 中的 ${user.home}；使用确定的本地缓存路径。
         systemProperty 'maven.repo.local', new File(gradle.gradleUserHomeDir, 'caches/robolectric').absolutePath
@@ -47,100 +38,16 @@ kotlin {
 // Explicit migration to the API verified in the official CXR-L 1.1.2 Sample.
 dependencies {
     implementation 'com.rokid.cxr:client-l:1.1.2'
-    implementation project(':gemma-runtime')
     implementation 'com.amap.api:navi-3dmap-location-search:11.3.100_3dmap11.3.100_loc11.3.000_sea9.8.1'
-    implementation files(rootProject.file('../../phone-companion/android/libs/sherpa-onnx-1.13.8.aar'))
     testImplementation 'junit:junit:4.13.2'
     testImplementation 'org.robolectric:robolectric:4.16'
 }
 
-// Large weights stay out of Git. Split assets keep individual ZIP entries bounded.
-def generatedModelAssets = layout.buildDirectory.dir('generated/gemmaAssets')
-tasks.register('prepareGemmaAssets') {
-    def modelPath = providers.gradleProperty('gemmaModelPath')
-    inputs.property('enabled', gemmaEnabled)
-    inputs.property('codeOnly', gemmaCodeOnly)
-    if (gemmaEnabled && !gemmaCodeOnly && modelPath.isPresent()) inputs.file(modelPath)
-    outputs.dir(generatedModelAssets)
-    doLast {
-        def target = generatedModelAssets.get().asFile
-        delete target
-        target.mkdirs()
-        if (!gemmaEnabled || gemmaCodeOnly) return
-        if (!modelPath.isPresent()) throw new GradleException('Full Gemma APK requires -PgemmaModelPath=<verified multimodal .litertlm>; use -PgemmaCodeOnly=true only for CI.')
-        def source = file(modelPath.get())
-        def expected = '181938105e0eefd105961417e8da75903eacda102c4fce9ce90f50b97139a63c'
-        if (source.length() != 2588147712L) throw new GradleException('Expected complete Gemma multimodal model; GPU-only bundle has no vision encoder')
-        def digest = java.security.MessageDigest.getInstance('SHA-256')
-        def parts = []
-        def root = new File(target, 'gemma'); root.mkdirs()
-        source.withInputStream { input ->
-            byte[] buffer = new byte[1024 * 1024]
-            long remaining = source.length()
-            int index = 0
-            while (remaining > 0) {
-                def name = String.format('weights-%03d.modelpart', index++)
-                long partSize = Math.min(256L * 1024 * 1024, remaining)
-                new File(root, name).withOutputStream { output ->
-                    long written = 0
-                    while (written < partSize) {
-                        int read = input.read(buffer, 0, (int)Math.min(buffer.length, partSize - written))
-                        if (read < 0) throw new GradleException('Truncated Gemma model')
-                        output.write(buffer, 0, read); digest.update(buffer, 0, read); written += read
-                    }
-                }
-                parts.add([name: name, bytes: partSize]); remaining -= partSize
-            }
-        }
-        def actual = digest.digest().encodeHex().toString()
-        if (actual != expected) { delete root; throw new GradleException('Gemma model SHA-256 mismatch') }
-        new File(root, 'manifest.json').text = groovy.json.JsonOutput.toJson([
-            model: 'gemma-4-E2B-it.litertlm', bytes: source.length(), sha256: expected,
-            revision: 'b3ca0d2f076785a8f4b2219ddbd2bdb99954eae1', parts: parts])
-    }
-}
-android.sourceSets.main.assets.srcDir(generatedModelAssets)
-tasks.named('preBuild').configure { dependsOn 'prepareGemmaAssets' }
-
-def speechLock = rootProject.file('../../../tools/cxrl-speech-models.lock.json')
-def generatedSpeechAssets = layout.buildDirectory.dir('generated/speechAssets')
-tasks.register('prepareSpeechAssets') {
-    def modelRoot = providers.gradleProperty('speechModelRoot')
-    inputs.file(speechLock)
-    inputs.property('enabled', speechEnabled)
-    inputs.property('codeOnly', gemmaCodeOnly)
-    if (speechEnabled && !gemmaCodeOnly && modelRoot.isPresent()) inputs.dir(modelRoot)
-    outputs.dir(generatedSpeechAssets)
-    doLast {
-        def target = generatedSpeechAssets.get().asFile
-        delete target
-        target.mkdirs()
-        if (!speechEnabled || gemmaCodeOnly) return
-        if (!modelRoot.isPresent()) throw new GradleException('Full speech APK requires -PspeechModelRoot=<verified speech model directory>')
-        def lock = new groovy.json.JsonSlurper().parse(speechLock)
-        def root = file(modelRoot.get())
-        lock.files.each { item ->
-            def source = new File(root, item.name)
-            if (source.length() != item.bytes) throw new GradleException('Speech model size mismatch: ' + item.name)
-            def digest = java.security.MessageDigest.getInstance('SHA-256')
-            def outputFile = new File(target, 'speech/files/' + item.name)
-            outputFile.parentFile.mkdirs()
-            source.withInputStream { input -> outputFile.withOutputStream { output ->
-                byte[] buffer = new byte[1024 * 1024]; int count
-                while ((count = input.read(buffer)) != -1) { output.write(buffer, 0, count); digest.update(buffer, 0, count) }
-            } }
-            if (digest.digest().encodeHex().toString() != item.sha256) throw new GradleException('Speech model checksum mismatch: ' + item.name)
-        }
-        new File(target, 'speech/manifest.json').text = groovy.json.JsonOutput.toJson(lock)
-    }
-}
-android.sourceSets.main.assets.srcDir(generatedSpeechAssets)
-tasks.named('preBuild').configure { dependsOn 'prepareSpeechAssets' }
-
 // 由源码生成资源，手机端与 CXR-L 端始终执行同一份仓库 Agent。
 def repoRoot = rootProject.file('../../..')
 def agentAssets = layout.buildDirectory.dir('generated/agentAssets')
-android.sourceSets.main.assets.srcDir(agentAssets)
+// src/main/assets 属于旧本地推理实验。纯云包只装入当前 Agent，依赖库自带的资源由 AGP 合并。
+android.sourceSets.main.assets.setSrcDirs([agentAssets])
 tasks.register('bundleAgent', Exec) {
     inputs.files(fileTree(repoRoot) {
         include 'apps/phone-companion/src/**/*.ts'
@@ -171,47 +78,9 @@ tasks.register('syncAgentPorts', Sync) {
 }
 tasks.named('preBuild').configure { dependsOn 'syncAgentPorts' }
 
-// 从已经校验的交付 APK 流式提取模型，避免把权重或生成文件放进 Git。
-def modelAssets = layout.buildDirectory.dir('generated/runtimeModelAssets')
-android.sourceSets.main.assets.srcDir(modelAssets)
-tasks.register('prepareRuntimeAssets') {
-    def codeOnly = providers.gradleProperty('cxrlCodeOnly').map { it.toBoolean() }.getOrElse(gemmaCodeOnly)
-    def sourceApk = providers.gradleProperty('cxrlModelApk')
-    def manifest = providers.gradleProperty('cxrlModelManifest')
-    inputs.property('codeOnly', codeOnly)
-    if (sourceApk.isPresent()) inputs.file(sourceApk)
-    if (manifest.isPresent()) inputs.file(manifest)
-    outputs.dir(modelAssets)
-    doLast {
-        if (codeOnly) {
-            if (modelAssets.get().asFile.exists() && modelAssets.get().asFile.list().length > 0)
-                throw new GradleException('Use a separate build directory for a code-only build')
-            modelAssets.get().asFile.mkdirs()
-            return
-        }
-        if (!sourceApk.isPresent() || !manifest.isPresent())
-            throw new GradleException('Full APK requires -PcxrlModelApk and -PcxrlModelManifest; code-only: -PcxrlCodeOnly=true')
-        def expected = new groovy.json.JsonSlurper().parse(file(manifest.get()))
-        def apk = file(sourceApk.get())
-        if (apk.length() != expected.apk_bytes) throw new GradleException('Model APK size mismatch')
-        def digest = java.security.MessageDigest.getInstance('SHA-256')
-        apk.withInputStream { input ->
-            byte[] bytes = new byte[1024 * 1024]
-            int count
-            while ((count = input.read(bytes)) > 0) digest.update(bytes, 0, count)
-        }
-        if (digest.digest().encodeHex().toString() != expected.apk_sha256)
-            throw new GradleException('Model APK checksum mismatch')
-        copy {
-            // 许可文件沿用主分支的 src/main/assets/licenses，避免同名资源重复。
-            from(zipTree(apk)) { include 'assets/gemma/**', 'assets/speech/**' }
-            into modelAssets
-            eachFile { details -> details.path = details.path.substring('assets/'.length()) }
-            includeEmptyDirs = false
-        }
-        if (!new File(modelAssets.get().asFile, 'speech/manifest.json').isFile() ||
-            !new File(modelAssets.get().asFile, 'gemma/manifest.json').isFile())
-            throw new GradleException('Source APK has no complete model manifests')
-    }
+// Kotlin 编译任务单独配置排除项，保证旧本地诊断代码不进入 APK。
+tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
+    exclude '**/BundledModel.kt', '**/GemmaObservation.kt', '**/SpeechModels.kt',
+        '**/SpeechDialogue.kt', '**/PhoneSpeechAudio.kt', '**/PhoneLActivity.kt', '**/CxrlSessionProbe.kt',
+        '**/BundledModelTest.kt', '**/SpeechDialogueTest.kt', '**/CxrlSessionProbeTest.kt'
 }
-tasks.named('preBuild').configure { dependsOn 'prepareRuntimeAssets' }

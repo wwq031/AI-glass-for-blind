@@ -46,9 +46,21 @@ class DeepSeekClientTest {
         assertEquals(42, tokens); assertEquals(1, connection.disconnects)
     }
 
+    @Test fun observationSendsConfirmedImageToCloudVision() {
+        val connection = Connection()
+        val client = DeepSeekClient("test", AgentModelSettings.PRO, { connection })
+        client.observe("描述眼前场景", byteArrayOf(1, 2, 3)) { false }
+        val body = JSONObject(connection.sent.toString("UTF-8"))
+        assertEquals(AgentModelSettings.FLASH, body.getString("model"))
+        val content = body.getJSONArray("messages").getJSONObject(1).getJSONArray("content")
+        assertEquals("描述眼前场景", content.getJSONObject(0).getString("text"))
+        assertEquals("data:image/jpeg;base64,AQID",
+            content.getJSONObject(1).getJSONObject("image_url").getString("url"))
+    }
+
     @Test fun errorsNeverRetryOrExposeRemoteBody() {
         for ((status, code) in mapOf(401 to "cloud_auth", 403 to "cloud_auth", 402 to "cloud_balance",
-            429 to "cloud_busy", 503 to "cloud_http", 302 to "cloud_http")) {
+            429 to "cloud_busy", 503 to "cloud_busy", 408 to "cloud_timeout", 504 to "cloud_timeout", 302 to "cloud_http")) {
             val connection = Connection(status, "private remote body")
             var opened = 0
             val client = DeepSeekClient("test", AgentModelSettings.FLASH, { opened++; connection })

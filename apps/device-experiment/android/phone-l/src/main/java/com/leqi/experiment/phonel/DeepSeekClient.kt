@@ -57,13 +57,21 @@ internal class DeepSeekClient(
             connection.setFixedLengthStreamingMode(body.size)
             connection.outputStream.use { it.write(body) }
             val status = connection.responseCode
-            if (status != 200) throw ModelServiceException(when (status) {
-                401, 403 -> "cloud_auth"
-                402 -> "cloud_balance"
-                429 -> "cloud_busy"
-                else -> "cloud_http"
-            })
-            val response = connection.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            if (cancelled()) throw ModelServiceException("cloud_cancelled")
+            if (status != 200) throw ModelServiceException.fromHttp(status)
+            // 输出最多 1536 tokens。限制实际读取量，避免异常响应耗尽手机内存。
+            val response = connection.inputStream.use { input ->
+                val output = java.io.ByteArrayOutputStream()
+                val buffer = ByteArray(8192)
+                while (true) {
+                    if (cancelled()) throw ModelServiceException("cloud_cancelled")
+                    val count = input.read(buffer)
+                    if (count < 0) break
+                    if (output.size() + count > 256 * 1024) throw ModelServiceException("cloud_format")
+                    output.write(buffer, 0, count)
+                }
+                output.toString("UTF-8")
+            }
             if (cancelled()) throw ModelServiceException("cloud_cancelled")
             val json = try { JSONObject(response) } catch (_: org.json.JSONException) {
                 throw ModelServiceException("cloud_format")
@@ -74,7 +82,7 @@ internal class DeepSeekClient(
             val answer = choice.optJSONObject("message")?.opt("content") as? String
             return answer?.takeIf { it.isNotBlank() } ?: throw ModelServiceException("cloud_format")
         } catch (_: SocketTimeoutException) {
-            throw ModelServiceException("cloud_timeout")
+            throw ModelServiceException(if (cancelled()) "cloud_cancelled" else "cloud_timeout")
         } catch (_: IOException) {
             throw ModelServiceException(if (cancelled()) "cloud_cancelled" else "cloud_network")
         } finally {
@@ -87,4 +95,14 @@ internal class DeepSeekClient(
 }
 
 /** 只跨桥传递固定错误代号，不记录服务器正文、请求或凭据。 */
-internal class ModelServiceException(val code: String) : Exception(code)
+internal class ModelServiceException(val code: String) : Exception(code) {
+    companion object {
+        fun fromHttp(status: Int) = ModelServiceException(when (status) {
+            401, 403 -> "cloud_auth"
+            402 -> "cloud_balance"
+            429, 503 -> "cloud_busy"
+            408, 504 -> "cloud_timeout"
+            else -> "cloud_http"
+        })
+    }
+}

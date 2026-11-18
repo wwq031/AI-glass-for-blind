@@ -542,6 +542,7 @@ function plannerPrompt(input: AgentTurnInput): string {
     "  · 一次最多四个动作；不确定就 speak 或 wait，不要猜。",
     "  · 口头回答通常一到三句，先回答用户的问题，避免重复自我介绍和罗列功能。",
     "  · 导航提醒（开始、转弯、偏航、到达）已由策略确定性播报过，不要重复播报，也不要重复调用导航工具。",
+    "  · 地点搜索或算路返回错误时，用一句话转述工具给出的原因和操作建议。若 retryable 为 false，等待用户处理设置。",
     "  · 不要给出任何“可以安全通行”的结论。",
     "  · session.conversation 是本会话历史，接着上文回答，不要重新开始。",
     "输入：" + JSON.stringify(input),
@@ -859,7 +860,8 @@ async function handlePress(message: Envelope): Promise<void> {
       // which skill this conversation is about.
       const finished = await speech.enqueue(
         "我在。你可以说出想去的地方，也可以问我眼前的情况。", "normal", sessionId, true);
-      if (!finished || generation !== operationGeneration) return;
+      if (generation !== operationGeneration) return;
+      if (!finished) { glasses.cancel(); return; }
       const purpose = glasses.armVoice();
       await nativeStep(generation, "device.send", { type: "voice.arm", payload: purpose });
       send({ id: message.id, type: "event.result", payload: { sessionId } });
@@ -967,7 +969,7 @@ async function handleNativeSpeech(message: Envelope): Promise<void> {
 }
 
 async function handleNativePhoto(message: Envelope): Promise<void> {
-  const native = message.payload as { tag?: string; mediaRef?: string } | undefined;
+  const native = message.payload as { tag?: string; mediaRef?: string; capturedAt?: string } | undefined;
   if (!native || typeof native.tag !== "string" || typeof native.mediaRef !== "string") return;
   const sessionId = glasses.sessionId;
   if (!sessionId) return;
@@ -979,7 +981,7 @@ async function handleNativePhoto(message: Envelope): Promise<void> {
   // any inference or any model could have an opinion about it.
   destinationCapture = {
     sessionId, capabilityId: authorised.capabilityId, mediaRef: native.mediaRef,
-    capturedAt: new Date().toISOString(),
+    capturedAt: native.capturedAt ?? new Date().toISOString(),
   };
   captureRetryCount = 0;
   await acceptNativeEvent(message.id, sessionId, "user", "user.capture_confirmed", {

@@ -11,7 +11,7 @@
     "occurred_at": { "type": "string", "format": "date-time" },
     "source": { "enum": ["transport", "speech", "navigation", "vision", "storage", "system"] },
     "code": {
-      "enum": ["transport_disconnected", "capture_failed", "speech_recognition_failed", "speech_low_confidence", "destination_not_found", "navigation_unavailable", "location_weak", "observation_timeout", "observation_low_confidence", "permission_denied", "unsupported", "unknown"]
+      "enum": ["transport_disconnected", "capture_failed", "speech_recognition_failed", "speech_low_confidence", "destination_not_found", "navigation_unavailable", "navigation_not_configured", "location_weak", "observation_timeout", "observation_low_confidence", "permission_denied", "unsupported", "unknown"]
     },
     "severity": { "enum": ["info", "warning", "critical"] },
     "retryable": { "type": "boolean" },

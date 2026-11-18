@@ -206,17 +206,17 @@ class AmapNaviAdapter(
     }
 
     override fun onCalculateRouteFailure(errorCode: Int) {
-        failRoute("高德步行路线计算失败（错误码 ${errorCode}）")
+        failRoute(when (errorCode) {
+            22 -> "高德未通过导航应用校验，请核对包名和签名。"
+            13 -> "高德导航 Key 无效或已过期，请检查手机导航配置。"
+            else -> "高德步行路线计算失败（错误码 ${errorCode}）"
+        })
     }
 
     override fun onCalculateRouteFailure(result: AMapCalcRouteResult?) {
         if (navigating) return
-        val detail = result?.getErrorDescription()
-        failRoute(
-            "高德步行路线计算失败（错误码 " +
-                (if (result == null) "未知" else result.getErrorCode().toString()) + "）" +
-                (if (detail == null || detail.isEmpty()) "" else "：$detail"),
-        )
+        if (result == null) failRoute("高德步行路线计算失败。")
+        else onCalculateRouteFailure(result.getErrorCode())
     }
 
     private fun failRoute(message: String) {

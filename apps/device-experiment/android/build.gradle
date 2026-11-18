@@ -10,3 +10,22 @@ allprojects {
         layout.buildDirectory.set(file("${outputRoot}/${project.name}"))
     }
 }
+
+// 两个手机宿主可以各自使用与发布包名、签名匹配的 Key，也兼容已有单包配置。
+ext.amapKeyFor = { String host ->
+    def names = ["AMAP_ANDROID_KEY_${host}", 'AMAP_ANDROID_KEY']
+    def explicit = providers.gradleProperty('amapAndroidKey').orNull
+    if (explicit != null) return explicit.trim()
+    def local = new Properties()
+    def localFile = file('local.properties')
+    if (localFile.isFile()) localFile.withInputStream { local.load(it) }
+    def envFile = file('../../../.env')
+    def lines = envFile.isFile() ? envFile.readLines('UTF-8') : []
+    for (def name : names) {
+        def line = lines.find { it ==~ /\s*${name}\s*=.*/ }
+        def value = providers.environmentVariable(name).orNull ?: local.getProperty(name) ?:
+            (line == null ? '' : line.substring(line.indexOf('=') + 1).trim().replaceAll(/^(['"])(.*)\1$/, '$2'))
+        if (value?.trim()) return value.trim()
+    }
+    return ''
+}

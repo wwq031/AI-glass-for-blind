@@ -12,7 +12,6 @@ import com.rokid.cxr.session.*
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.ByteArrayOutputStream
-import java.io.File
 import java.security.MessageDigest
 import java.time.Instant
 import java.util.UUID
@@ -27,16 +26,16 @@ class CxrlAgentService : Service() {
     private var web: AgentRuntimeWebView? = null
     private lateinit var device: CxrlAgentDevice
     private lateinit var navigation: AgentNavigationDevice
-    private var model: GemmaLocalBridge? = null
+    private lateinit var connectionNotice: Notification
+    private var connectionStarted = false
     private var cloud: DeepSeekClient? = null
     private var cloudTools: DeepSeekToolClient? = null
     private var utterance: CxrlSpeechPlayback? = null
-    private var speech: SpeechEngines? = null
     private val speechCache = SpeechAudioCache()
-    @Volatile private var modelsReady = false
+    @Volatile private var cloudConfigured = false
     private var counter = 0L
     private val media = LinkedHashMap<String, ByteArray>()
-    private val plays = LinkedHashMap<String, Pair<Long, (Boolean) -> Unit>>()
+    private val plays = LinkedHashMap<String, (Boolean) -> Unit>()
     private var voiceTag: String? = null
     private var photoTag: String? = null
     private var microphone: IAudioCallback? = null
@@ -83,9 +82,10 @@ class CxrlAgentService : Service() {
         manager.createNotificationChannel(NotificationChannel("agent", "助盲任务", NotificationManager.IMPORTANCE_LOW))
         val stop = PendingIntent.getService(this, 1, Intent(this, javaClass).setAction("stop"),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
-        startForeground(1, Notification.Builder(this, "agent").setSmallIcon(android.R.drawable.ic_dialog_info)
-            .setContentTitle("乐奇助盲 Agent").setContentText("正在准备本地模型和眼镜连接")
-            .setOngoing(true).addAction(Notification.Action.Builder(null, "停止任务", stop).build()).build())
+        connectionNotice = Notification.Builder(this, "agent").setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentTitle("乐奇助盲 Agent").setContentText("正在准备 DeepSeek 和眼镜连接")
+            .setOngoing(true).addAction(Notification.Action.Builder(null, "停止任务", stop).build()).build()
+        updateForeground(connectionNotice)
         navigation = AgentNavigationDevice(this)
         web = AgentRuntimeWebView(this, ::handle)
         device = CxrlAgentDevice(this, ::onDevice) { reason ->
@@ -96,59 +96,48 @@ class CxrlAgentService : Service() {
         worker.execute {
             val outcome = runCatching {
                 val settings = AgentModelSettings(this)
-                if (settings.cloudEnabled) {
-                    val key = try { settings.apiKey() } catch (_: Exception) {
-                        throw ModelServiceException("cloud_key_unreadable")
-                    }
-                    check(key.isNotBlank())
-                    cloud = DeepSeekClient(key, settings.model, usage = settings::recordUsage)
-                    if (settings.mode == AgentModelSettings.Mode.FULL) cloudTools = DeepSeekToolClient(key)
-                } else localModel()
-                if (cloudTools == null) localSpeech()
+                val key = try { settings.apiKey() } catch (_: Exception) {
+                    throw ModelServiceException("cloud_key_unreadable")
+                }
+                if (key.isBlank()) throw ModelServiceException("cloud_key_missing")
+                cloud = DeepSeekClient(key, settings.model, usage = settings::recordUsage)
+                cloudTools = DeepSeekToolClient(key)
             }
             main.post {
                 if (!closed) {
-                    modelsReady = outcome.isSuccess
-                    if (device.ready) device.command("status", if (modelsReady) "准备好了，短按开始；结束请在手机点停止任务与连接" else "模型准备失败，请在手机检查")
-                    status(if (modelsReady) "${AgentModelSettings(this).mode.label}已就绪；连接后按键开始"
-                        else if (outcome.exceptionOrNull() is ModelServiceException) "密钥读取失败，请在对话模型设置中重新填写"
-                        else "本地模型准备失败：${outcome.exceptionOrNull()!!.javaClass.simpleName}")
+                    cloudConfigured = outcome.isSuccess
+                    if (device.ready) device.command("status", if (cloudConfigured) "准备好了，短按开始；结束请在手机点停止任务与连接" else "请在手机检查 DeepSeek 密钥设置")
+                    status(if (cloudConfigured) "DeepSeek 密钥已载入；连接后按键开始"
+                        else if (outcome.exceptionOrNull() is ModelServiceException) "请在对话模型设置中填写有效的 DeepSeek 密钥"
+                        else "DeepSeek 准备失败：${outcome.exceptionOrNull()!!.javaClass.simpleName}")
                 }
             }
         }
-    }
-
-    /** Used only on the model worker. Local prompts also work in fully connected mode. */
-    private fun localSpeech(): SpeechEngines {
-        speech?.let { return it }
-        val engines = SherpaSpeechEngines(SpeechAssets.prepare(this) { closed })
-        try { engines.initialize() } catch (error: Exception) { engines.close(); throw error }
-        speech = engines
-        return engines
-    }
-
-    /** 云端对话不等待 Gemma 加载；首次看图时才准备本地视觉模型。仅 worker 调用。 */
-    private fun localModel(): GemmaLocalBridge {
-        model?.let { return it }
-        val file = BundledModel.prepare(this, { closed }) { percent -> status("本地模型准备 $percent%") }
-        val local = GemmaLocalBridge(file, File(cacheDir, "gemma-agent"), gpu = true)
-        try { local.initialize(); local.verifyVisionReady() }
-        catch (error: Exception) { local.close(); throw error }
-        model = local
-        return local
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent == null || intent.action == "stop") { stopSelf(); return START_NOT_STICKY }
         val token = intent.getStringExtra("token")
         if (!token.isNullOrBlank()) {
+            updateForeground(connectionNotice)
             textTrace.enabled = intent.getBooleanExtra("textDiagnostics", false)
-            retire()
-            // 替换连接时同步撤销 Agent 的旧会话，避免旧拍照窗口继续吞掉新按键。
-            envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", "重新连接"))
+            if (connectionStarted) {
+                retire()
+                envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", "重新连接"))
+            }
+            connectionStarted = true
             device.connect(token)
         }
         return START_NOT_STICKY
+    }
+
+    private fun updateForeground(notification: Notification) {
+        var types = android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_CONNECTED_DEVICE
+        if (AmapPrivacy.isAgreed(this) && PhoneLocationAdapter.hasPermission(this) &&
+            getSystemService(android.location.LocationManager::class.java).isLocationEnabled) {
+            types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
+        }
+        startForeground(1, notification, types)
     }
 
     private fun status(text: String) { main.post {
@@ -173,7 +162,7 @@ class CxrlAgentService : Service() {
         val attempt = generation
         worker.execute {
             if (closed || attempt != generation) return@execute
-            val result = runCatching { check(modelsReady) { "模型尚未就绪" }; action() }
+            val result = runCatching { check(cloudConfigured) { "云服务配置尚未就绪" }; action() }
             main.post {
                 if (!closed && attempt == generation) result.fold({ reply(id, it) },
                     { reply(id, error = (it as? ModelServiceException)?.code ?: "原生操作失败：${it.javaClass.simpleName}") })
@@ -186,12 +175,11 @@ class CxrlAgentService : Service() {
         val payload = message.optJSONObject("payload") ?: JSONObject()
         try {
             when (message.optString("type")) {
-                "ready" -> status("Agent 已加载；正在等待模型和眼镜就绪")
+                "ready" -> status("Agent 已加载；正在连接眼镜并读取云服务配置")
                 "model.generate" -> {
                     val attempt = generation
                     compute(id) {
-                        val response = cloud?.generate(payload.getString("prompt")) { closed || attempt != generation }
-                            ?: localModel().generateText(payload.getString("prompt"), payload.getString("sessionId"))
+                        val response = checkNotNull(cloud).generate(payload.getString("prompt")) { closed || attempt != generation }
                         diagnosticPlan(id, response)
                         response
                     }
@@ -201,10 +189,9 @@ class CxrlAgentService : Service() {
                     val attempt = generation
                     compute(id) {
                         val prompt = payload.getString("prompt")
-                        val tools = cloudTools
+                        val tools = checkNotNull(cloudTools)
                         val cancelled = { closed || attempt != generation }
                         when {
-                            tools == null -> localModel().generateVision(bytes, prompt)
                             payload.optString("capabilityId") == "vision.menu" -> {
                                 val result = tools.recognize(bytes, cancelled)
                                 result.optInt("page_count", -1).takeIf { it >= 0 }?.let(AgentModelSettings(this)::recordOcr)
@@ -214,8 +201,7 @@ class CxrlAgentService : Service() {
                         }
                     }
                 }
-                "speech.say" -> say(payload.getString("text"),
-                    payload.optBoolean("local") || payload.optString("priority") in setOf("high", "critical")) { ok ->
+                "speech.say" -> say(payload.getString("text")) { ok ->
                     if (ok) reply(id, JSONObject().put("finished", true)) else reply(id, error = "眼镜播报未完成")
                 }
                 "device.send" -> deviceCommand(id, payload)
@@ -229,7 +215,7 @@ class CxrlAgentService : Service() {
                 }
                 "error" -> {
                     diagnostic("agent.error", "id=$id detail=${message.optString("error")}")
-                    status("本轮模型请求失败，眼镜将说明原因；可检查网络或对话模型设置")
+                    status("本轮任务未完成，请检查手机提示后重试")
                 }
                 "event.result" -> diagnostic("event.result", "id=$id rejection=${payload.optJSONObject("rejection")?.optString("code")} tools=${payload.optJSONArray("toolResults")}")
                 "effect" -> Unit // speech.say 已统一负责真实播放，Effect 不重复播报。
@@ -242,7 +228,7 @@ class CxrlAgentService : Service() {
         val type = request.getString("type")
         val tag = request.optString("payload")
         when (type) {
-            "task.cancel" -> retire()
+            "task.cancel" -> retire(notifyDevice = false)
             "voice.arm" -> { check(microphone == null && photoCallback == null); voiceTag = tag; photoTag = null }
             "entrance.arm" -> { check(microphone == null && photoCallback == null); photoTag = tag; voiceTag = null }
             "voice.disarm" -> { voiceTag = null; stopRecording(false) }
@@ -253,6 +239,10 @@ class CxrlAgentService : Service() {
             }
             else -> error("不支持的设备指令")
         }
+        if (!device.ready && type in setOf("task.cancel", "voice.disarm", "entrance.disarm")) {
+            reply(id, JSONObject().put("sent", false))
+            return
+        }
         device.command(type, tag) { it.fold({ reply(id, JSONObject().put("sent", true)) },
             { reply(id, error = "设备指令发送失败") }) }
     }
@@ -262,17 +252,18 @@ class CxrlAgentService : Service() {
         val tag = packet.optString("payload")
         when (type) {
             "link.ready" -> {
-                status("眼镜已握手；模型就绪后可按键开始")
-                device.command("status", if (modelsReady) "准备好了，短按开始；结束请在手机点停止任务与连接" else "模型正在准备，请稍候")
+                status("眼镜已连接，读取云服务配置后可按键开始")
+                device.command("status", if (cloudConfigured) "准备好了，短按开始；结束请在手机点停止任务与连接" else "正在读取 DeepSeek 配置，请稍候")
                 return
             }
+            "play.received" -> return // 收齐音频后眼镜开始播放，完成以 play.done 为准。
             "play.done", "play.failed" -> {
                 diagnostic(type, "playId=$tag")
-                plays.remove(tag)?.second?.invoke(type == "play.done"); return
+                plays.remove(tag)?.invoke(type == "play.done"); return
             }
             "user.cancel" -> retire()
-            "probe.glasses" -> if (!modelsReady) {
-                device.command("status", "模型尚未就绪，请稍候"); return
+            "probe.glasses" -> if (!cloudConfigured) {
+                device.command("status", "云服务配置尚未就绪，请稍候"); return
             } else if (microphone != null) {
                 stopRecording(true); return
             }
@@ -346,17 +337,10 @@ class CxrlAgentService : Service() {
             if (closed || attempt != generation) return@execute
             val result = runCatching {
                 check(raw.size >= 6400 && raw.size % 2 == 0)
-                val tools = cloudTools
-                if (tools != null) {
-                    val response = tools.transcribe(raw) { closed || attempt != generation }
-                    response.optLong("duration_ms", -1L).takeIf { it >= 0 }?.let(AgentModelSettings(this)::recordAsr)
-                    response.opt("text") as? String ?: throw ModelServiceException("cloud_format")
-                } else {
-                    val samples = FloatArray(raw.size / 2) { index ->
-                        (((raw[index * 2].toInt() and 255) or (raw[index * 2 + 1].toInt() shl 8)).toShort()) / 32768f
-                    }
-                    localSpeech().transcribe(samples)
-                }
+                val tools = checkNotNull(cloudTools)
+                val response = tools.transcribe(raw) { closed || attempt != generation }
+                response.optLong("duration_ms", -1L).takeIf { it >= 0 }?.let(AgentModelSettings(this)::recordAsr)
+                response.opt("text") as? String ?: throw ModelServiceException("cloud_format")
             }
             main.post {
                 if (!closed && attempt == generation) {
@@ -376,7 +360,9 @@ class CxrlAgentService : Service() {
         val current = device.current()
         val attempt = generation
         val callback = object : IImageCallback {
-            override fun onImageReceived(data: ByteArray) { main.post {
+            override fun onImageReceived(data: ByteArray) {
+                val receivedAt = Instant.now().toString()
+                main.post {
                 if (attempt != generation || photoTag != tag || photoCallback !== this) return@post
                 clearPhoto()
                 if (data.size !in 1..2097152) { device.fail("图片大小异常"); return@post }
@@ -395,7 +381,7 @@ class CxrlAgentService : Service() {
                         result.fold({ jpeg ->
                             val ref = UUID.randomUUID().toString()
                             media.clear(); media[ref] = jpeg
-                            envelope("native.photo", JSONObject().put("tag", tag).put("mediaRef", ref))
+                            envelope("native.photo", JSONObject().put("tag", tag).put("mediaRef", ref).put("capturedAt", receivedAt))
                         }, { device.fail("图片校验失败") })
                     }
                 }
@@ -414,19 +400,19 @@ class CxrlAgentService : Service() {
         photoCallback = null; photoSession = null; photoTag = null
     }
 
-    private fun say(text: String, local: Boolean, completed: (Boolean) -> Unit) {
-        if (!device.ready || !modelsReady || utterance != null) { completed(false); return }
+    private fun say(text: String, completed: (Boolean) -> Unit) {
+        if (!device.ready || !cloudConfigured || utterance != null) { completed(false); return }
         val attempt = generation
         val speechId = UUID.randomUUID().toString()
         textTrace.record("speech", speechId, text)
         diagnostic("speech.request", "playId=$speechId chars=${text.length}")
         val pipeline = CxrlSpeechPlayback(
-            synthesize = { part, done -> computeSpeech(part, attempt, speechId, local, done) },
+            synthesize = { part, done -> computeSpeech(part, attempt, speechId, done) },
             play = { audio, done -> sendAudio(audio, attempt, speechId, done) },
             completed = { ok ->
                 utterance = null
                 if (!ok) {
-                    // 预合成失败或取消后，旧播放回执和超时不能影响下一轮任务。
+                    // 合成失败或取消后，旧播放回执和超时不能影响下一轮任务。
                     plays.clear()
                     if (attempt == generation && device.ready) device.command("task.cancel")
                 }
@@ -435,14 +421,14 @@ class CxrlAgentService : Service() {
         )
         utterance = pipeline
         try { pipeline.start(text) } catch (_: Exception) { pipeline.cancel() }
-        // 整段播报须早于桥接层的 120 秒截止时间结束，超时后停止后续分句。
+        // 整段播报须早于桥接层的 120 秒截止时间结束，超时后撤销本轮播报。
         main.postDelayed({ if (utterance === pipeline) pipeline.cancel() }, 110000)
     }
 
     private fun sendAudio(audio: SpeechAudio, attempt: Long, speechId: String, completed: (Boolean) -> Unit) {
         val playId = UUID.randomUUID().toString()
         diagnostic("speech.part", "speechId=$speechId playId=$playId")
-        plays[playId] = Pair(attempt, completed)
+        plays[playId] = completed
         val pcm = ByteArray(audio.samples.size * 2)
         audio.samples.forEachIndexed { index, value ->
             val n = (value * 32767f).toInt().coerceIn(-32768, 32767)
@@ -451,7 +437,7 @@ class CxrlAgentService : Service() {
         val hash = MessageDigest.getInstance("SHA-256").digest(pcm).joinToString("") { "%02x".format(it.toInt() and 255) }
         val header = JSONObject().put("id", playId).put("bytes", pcm.size).put("rate", audio.sampleRate).put("sha256", hash)
         diagnostic("audio.send.start", "playId=$playId bytes=${pcm.size} rate=${audio.sampleRate} audioMs=${audio.samples.size * 1000L / audio.sampleRate}")
-        fun failed() { plays.remove(playId)?.second?.invoke(false) }
+        fun failed() { plays.remove(playId)?.invoke(false) }
         device.command("play.start", header.toString()) { result ->
             if (result.isFailure) failed() else {
                 // 逐块等待 SDK 接受再发送下一块，避免无限堆积原生队列。
@@ -472,28 +458,36 @@ class CxrlAgentService : Service() {
         }
         main.postDelayed({ if (plays.containsKey(playId)) { failed(); device.fail("眼镜播放回执超时") } }, 110000)
     }
-    private fun computeSpeech(text: String, attempt: Long, playId: String, local: Boolean, done: (SpeechAudio?) -> Unit) {
+    private fun computeSpeech(text: String, attempt: Long, playId: String, done: (SpeechAudio?) -> Unit) {
         worker.execute {
             if (closed || attempt != generation) return@execute
             val started = SystemClock.elapsedRealtime()
             textTrace.record("tts.part", playId, text)
             diagnostic("tts.start", "playId=$playId")
             val result = runCatching {
-                check(text.length in 1..500)
-                val tools = cloudTools
-                if (tools != null && !local) {
-                    speechCache.getOrSynthesize("deepseek:stella:pcm:$text") {
-                        tools.synthesize(text) { closed || attempt != generation }.also {
-                            AgentModelSettings(this).recordTts(text.codePointCount(0, text.length))
-                        }
+                val tools = checkNotNull(cloudTools)
+                speechCache.getOrSynthesize("deepseek:stella:pcm:$text") {
+                    SpeechTransportAudio.prepare(tools.synthesize(text) { closed || attempt != generation }).also {
+                        AgentModelSettings(this).recordTts(text.codePointCount(0, text.length))
                     }
-                } else {
-                    speechCache.getOrSynthesize("local:$text") { SpeechTransportAudio.prepare(localSpeech().synthesize(text)) }
                 }
             }
             diagnostic("tts.complete", "playId=$playId elapsedMs=${SystemClock.elapsedRealtime() - started} success=${result.isSuccess} error=${result.exceptionOrNull()?.javaClass?.simpleName}")
             val audio = result.getOrNull()
-            main.post { if (!closed && attempt == generation) done(audio) }
+            main.post { if (!closed && attempt == generation) {
+                done(audio)
+                if (audio == null) {
+                    val message = when ((result.exceptionOrNull() as? ModelServiceException)?.code) {
+                        "cloud_auth" -> "语音密钥未获授权，请检查手机的对话模型设置。"
+                        "cloud_balance" -> "DeepSeek 余额不足，请检查账户。"
+                        "cloud_timeout", "cloud_busy" -> "语音服务暂时繁忙，请稍后再按键。"
+                        "cloud_network" -> "语音服务连接失败，请检查手机网络再按键。"
+                        else -> "语音播报失败，请稍后再按键。"
+                    }
+                    status(message)
+                    if (device.ready) device.command("service.alert", message)
+                }
+            } }
         }
     }
 
@@ -503,14 +497,29 @@ class CxrlAgentService : Service() {
         val result = JSONObject().put("callId", "${call.getJSONObject("plan").getString("planId")}:${call.getInt("actionIndex")}")
             .put("sessionId", call.getString("sessionId")).put("toolId", tool).put("facts", JSONArray())
         check(tool == "navigation.search_destination") { "不支持的原生工具" }
-        val metadata = packageManager.getApplicationInfo(packageName, android.content.pm.PackageManager.GET_META_DATA).metaData
-        if (metadata?.getString("com.amap.api.v2.apikey").isNullOrBlank()) {
-            result.put("completedAt", Instant.now().toString()).put("status", "failed").put("output", JSONObject())
-                .put("error", JSONObject().put("code", "navigation_not_configured")
-                    .put("message", "导航服务尚未完成首次配置，请由家属协助设置").put("retryable", false))
-            reply(id, result); return
+        val query = call.getJSONObject("arguments").getString("query")
+        AmapNavigationPanel.failedQuery = null
+        fun failure(code: String, message: String, retryable: Boolean) {
+            val hint = if (code == "navigation_not_configured" && AmapNavigationPanel.canOpen(this)) {
+                AmapNavigationPanel.failedQuery = query
+                "可在手机的高德导航设置中用高德地图搜索。"
+            } else ""
+            result.put("status", "failed").put("output", JSONObject()).put("error",
+                JSONObject().put("code", code).put("message", message + hint).put("retryable", retryable))
         }
-        navigation.searchDestination(call.getJSONObject("arguments").getString("query")) { found ->
+        if (!AmapPrivacy.isAgreed(this) || !PhoneLocationAdapter.hasPermission(this)) {
+            result.put("completedAt", Instant.now().toString())
+            failure("permission_denied", "请先在手机的高德导航设置中开启地点搜索与定位。", false)
+            reply(id, result)
+            return
+        }
+        if (!AmapNavigationPanel.hasKey(this)) {
+            result.put("completedAt", Instant.now().toString())
+            failure("navigation_not_configured", "手机尚未配置高德 Android Key。", false)
+            reply(id, result)
+            return
+        }
+        navigation.searchDestination(query) { found ->
             if (attempt != generation) return@searchDestination
             result.put("completedAt", Instant.now().toString())
             when (found) {
@@ -523,8 +532,7 @@ class CxrlAgentService : Service() {
                     }
                     result.put("status", "succeeded").put("output", JSONObject().put("candidates", candidates))
                 }
-                is AgentNavigationDevice.SearchResult.Failure -> result.put("status", "failed").put("output", JSONObject())
-                    .put("error", JSONObject().put("code", found.code).put("message", found.message).put("retryable", found.retryable))
+                is AgentNavigationDevice.SearchResult.Failure -> failure(found.code, found.message, found.retryable)
             }
             reply(id, result)
         }
@@ -553,7 +561,11 @@ class CxrlAgentService : Service() {
             }
             override fun onRouteFailed(message: String) {
                 if (!current()) return
-                if (startingRoute == id) { startingRoute = null; reply(id, error = message) }
+                if (startingRoute == id) {
+                    startingRoute = null
+                    reply(id, JSONObject().put("started", false).put("error", JSONObject()
+                        .put("code", "navigation_unavailable").put("message", message).put("retryable", false)))
+                }
                 send("route_failed", message); route = null
             }
             override fun onNavigationText(text: String) = send("navigation_text", text)
@@ -565,7 +577,8 @@ class CxrlAgentService : Service() {
         })
     }
 
-    private fun retire() {
+    private fun retire(notifyDevice: Boolean = true) {
+        AmapNavigationPanel.failedQuery = null
         generation++
         cloud?.cancel()
         cloudTools?.cancel()
@@ -578,17 +591,17 @@ class CxrlAgentService : Service() {
         runCatching { microphoneSession?.stopAudioStream() }
         microphone = null; microphoneSession = null
         clearPhoto(); media.clear()
-        val pending = plays.values.toList(); plays.clear(); pending.forEach { it.second(false) }
+        val pending = plays.values.toList(); plays.clear(); pending.forEach { it(false) }
         route = null
         startingRoute?.let { reply(it, error = "导航已取消") }; startingRoute = null
         navigation.stopWalking { }
-        if (device.ready) device.command("task.cancel")
+        if (notifyDevice && device.ready) device.command("task.cancel")
     }
     override fun onDestroy() {
         textTrace.enabled = false
         retire(); closed = true
         device.close(); navigation.close(); web?.close(); web = null
-        worker.execute { speechCache.clear(); runCatching { speech?.close() }; runCatching { model?.close() } }
+        worker.execute { speechCache.clear() }
         worker.shutdown()
         super.onDestroy()
     }

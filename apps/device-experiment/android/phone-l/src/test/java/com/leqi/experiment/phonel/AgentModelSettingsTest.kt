@@ -13,48 +13,38 @@ import javax.crypto.KeyGenerator
 @RunWith(RobolectricTestRunner::class)
 @Config(manifest = Config.NONE, sdk = [35])
 class AgentModelSettingsTest {
-    @Test fun oldCloudSettingKeepsMediaLocalUntilFullModeIsSelected() {
+    @Test fun requiresKeyAndCredentialsAreEncryptedAcrossReopen() {
         val preferences = RuntimeEnvironment.getApplication().getSharedPreferences(UUID.randomUUID().toString(), Context.MODE_PRIVATE)
         val encryptionKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
         val settings = AgentModelSettings(preferences) { encryptionKey }
-        preferences.edit().putBoolean("cloud", true).commit()
-        assertEquals(AgentModelSettings.Mode.CHAT, settings.mode)
-        settings.save(AgentModelSettings.Mode.FULL, AgentModelSettings.FLASH, "test-private-key")
-        assertEquals(AgentModelSettings.Mode.FULL, AgentModelSettings(preferences) { encryptionKey }.mode)
-        settings.clearKey()
-        assertEquals(AgentModelSettings.Mode.LOCAL, settings.mode)
-    }
-
-    @Test fun defaultsFreeAndCredentialsAreEncryptedAcrossReopen() {
-        val preferences = RuntimeEnvironment.getApplication().getSharedPreferences(UUID.randomUUID().toString(), Context.MODE_PRIVATE)
-        val encryptionKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
-        val settings = AgentModelSettings(preferences) { encryptionKey }
-        assertFalse(settings.cloudEnabled); assertFalse(settings.hasKey)
+        assertFalse(settings.hasKey)
         assertEquals(AgentModelSettings.FLASH, settings.model)
-        assertThrows(IllegalArgumentException::class.java) { settings.save(true, AgentModelSettings.FLASH, "") }
-        settings.save(true, AgentModelSettings.FLASH, "test-private-key")
+        assertThrows(IllegalArgumentException::class.java) { settings.save(AgentModelSettings.FLASH, "") }
+        settings.save(AgentModelSettings.FLASH, "test-private-key")
         assertFalse(preferences.all.toString().contains("test-private-key"))
         val reopened = AgentModelSettings(preferences) { encryptionKey }
         assertEquals("test-private-key", reopened.apiKey())
-        reopened.save(true, AgentModelSettings.PRO, "")
+        reopened.save(AgentModelSettings.PRO, "")
         assertEquals("test-private-key", reopened.apiKey())
         assertEquals(AgentModelSettings.PRO, reopened.model)
         reopened.recordUsage(42); reopened.recordUsage(8)
         assertEquals(50L, reopened.totalTokens)
         reopened.clearKey()
-        assertFalse(reopened.cloudEnabled); assertFalse(reopened.hasKey)
+        assertFalse(reopened.hasKey)
         assertEquals("", reopened.apiKey())
     }
 
-    @Test fun corruptedCredentialFailsClosedAndLocalModeNeedsNoDecryption() {
+    @Test fun corruptedCredentialCanBeClearedAndReplaced() {
         val preferences = RuntimeEnvironment.getApplication().getSharedPreferences(UUID.randomUUID().toString(), Context.MODE_PRIVATE)
         val encryptionKey = KeyGenerator.getInstance("AES").apply { init(256) }.generateKey()
         val settings = AgentModelSettings(preferences) { encryptionKey }
-        settings.save(true, AgentModelSettings.FLASH, "test")
+        settings.save(AgentModelSettings.FLASH, "test")
         preferences.edit().putString("credential", "AAAA").commit()
         assertThrows(Exception::class.java) { settings.apiKey() }
-        settings.save(false, AgentModelSettings.FLASH, "")
-        assertFalse(settings.cloudEnabled)
-        assertThrows(IllegalArgumentException::class.java) { settings.save(true, AgentModelSettings.FLASH, "bad\nkey") }
+        settings.clearKey()
+        assertFalse(settings.hasKey)
+        settings.save(AgentModelSettings.FLASH, "replacement")
+        assertEquals("replacement", settings.apiKey())
+        assertThrows(IllegalArgumentException::class.java) { settings.save(AgentModelSettings.FLASH, "bad\nkey") }
     }
 }

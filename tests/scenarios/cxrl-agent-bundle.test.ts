@@ -6,10 +6,19 @@ import { join } from "node:path";
 import { runInNewContext } from "node:vm";
 import test from "node:test";
 
+test("CXR-L cloud-only host sends every speech priority to the cloud (source contract)", () => {
+  const source = readFileSync("apps/device-experiment/android/phone-l/src/main/java/com/leqi/experiment/phonel/CxrlAgentService.kt", "utf8");
+  // 开场和紧急提示也必须走同一条云端播报路径。
+  assert.doesNotMatch(source, /GemmaLocalBridge|SherpaSpeechEngines|localSpeech|localModel/);
+  const dispatch = source.split('"speech.say" ->')[1]!.split('"device.send" ->')[0]!;
+  assert.doesNotMatch(dispatch, /optBoolean\("local"\)|optString\("priority"\)/);
+  assert.match(source, /tools.synthesize\(text\)/);
+});
+
 test("CXR-L reconnect retires the Agent before replacing the native connection (source contract)", () => {
   const service = readFileSync("apps/device-experiment/android/phone-l/src/main/java/com/leqi/experiment/phonel/CxrlAgentService.kt", "utf8");
   const start = service.split("override fun onStartCommand")[1]!.split("private fun status")[0]!.replace(/\/\/[^\r\n]*/g, "");
-  assert.match(start, /retire\(\);?\s*envelope\("native.device", JSONObject\(\)\.put\("kind", "disconnected"\)\.put\("reason", "重新连接"\)\)\s*device.connect\(token\)/);
+  assert.match(start, /if \(connectionStarted\) \{\s*retire\(\)\s*envelope\("native.device", JSONObject\(\)\.put\("kind", "disconnected"\)\.put\("reason", "重新连接"\)\)\s*\}\s*connectionStarted = true\s*device.connect\(token\)/);
 });
 
 test("CXR-L screens direct users to the verified phone stop control", () => {

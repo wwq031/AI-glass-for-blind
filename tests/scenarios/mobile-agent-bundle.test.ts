@@ -26,6 +26,7 @@ test("browser bundle runs the repository Agent on a contract cancel event", asyn
     Set,
     WeakSet,
     console,
+    setTimeout, clearTimeout,
   };
   runInNewContext(bundled.outputFiles[0]!.text, sandbox);
   const receiver = (sandbox.window as typeof sandbox.window & {
@@ -50,7 +51,15 @@ test("browser bundle runs the repository Agent on a contract cancel event", asyn
   assert.ok(messages.some((message) => message.type === "effect" &&
     (message.payload as { type?: string; payload?: { status?: string } })?.type === "session" &&
     (message.payload as { payload?: { status?: string } }).payload?.status === "cancelled"));
+  // 模拟设备完成取消、停止导航和提示音，回收每个原生请求的等待定时器。
+  for (const request of messages.filter((message) =>
+    ["device.send", "policy.navigation.stop", "speech.say"].includes(message.type as string))) {
+    receiver.receive(JSON.stringify({ id: request.id, type: "response",
+      payload: { sent: true, stopped: true, finished: true } }));
+  }
+  await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(messages.some((message) => message.type === "event.result" && message.id === "request-1"));
+  assert.ok(!messages.some((message) => message.type === "error"));
 });
 
 test("glasses cancellation becomes a repository Agent cancel event", async () => {
@@ -91,8 +100,12 @@ test("glasses cancellation becomes a repository Agent cancel event", async () =>
     (message.payload as { payload?: { status?: string } }).payload?.status === "cancelled"));
   for (const request of messages.filter((message) =>
     message.type === "policy.navigation.stop" ||
+    (message.type === "speech.say" && message.id !== prompt.id) ||
     (message.type === "device.send" && message.id !== arm.id))) {
-    receive(JSON.stringify({ id: request.id, type: "response", payload: { sent: true, stopped: true } }));
+    receive(JSON.stringify({ id: request.id, type: "response", payload: { sent: true, stopped: true, finished: true } }));
   }
+  await tick();
+  assert.ok(messages.some((message) => message.type === "event.result" && message.id === "cancel-button"));
+  assert.ok(!messages.some((message) => message.type === "error"));
   assert.equal((prompt.payload as { allowRepeat?: boolean }).allowRepeat, true);
 });

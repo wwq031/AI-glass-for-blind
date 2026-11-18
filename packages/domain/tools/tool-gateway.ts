@@ -36,7 +36,8 @@ export interface ContractError {
   session_id: string;
   occurred_at: string;
   source: "system";
-  code: "permission_denied" | "unsupported" | "observation_timeout" | "unknown";
+  code: "permission_denied" | "unsupported" | "observation_timeout" | "unknown" |
+    "navigation_unavailable" | "location_weak" | "navigation_not_configured";
   severity: "warning" | "critical";
   retryable: boolean;
   user_action: "none" | "retry" | "wait" | "cancel";
@@ -61,6 +62,18 @@ export interface ToolHandlerOutput {
   output?: Record<string, unknown>;
   events?: ToolResult["events"];
   facts?: Fact[];
+}
+
+/** 只有设备适配器明确提供的用户提示才允许出现在工具结果里。 */
+export class ToolFailure extends Error {
+  readonly code: ContractError["code"];
+  readonly retryable: boolean;
+
+  constructor(code: ContractError["code"], message: string, retryable: boolean) {
+    super(message);
+    this.code = code;
+    this.retryable = retryable;
+  }
 }
 
 export interface ToolExecutionContext {
@@ -188,6 +201,9 @@ export class ToolGateway {
       this.audit(call, state, "executed");
       return result;
     } catch (error) {
+      if (error instanceof ToolFailure) {
+        return this.reject(call, state, "failed", error.code, error.message, error.retryable);
+      }
       const timedOut = error instanceof ToolTimeoutError;
       return this.reject(
         call,

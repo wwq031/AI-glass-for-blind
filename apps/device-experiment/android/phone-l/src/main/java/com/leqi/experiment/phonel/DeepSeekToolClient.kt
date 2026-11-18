@@ -26,7 +26,8 @@ internal class DeepSeekToolClient(
 
     fun synthesize(text: String, cancelled: () -> Boolean): SpeechAudio {
         val body = JSONObject().put("text", text).put("format", "pcm").toString().toByteArray()
-        val pcm = request("tts", "application/json", body, 2_880_000, cancelled)
+        // 24 kHz、单声道、16 位，与整条播报的 110 秒时限一致。
+        val pcm = request("tts", "application/json", body, 24_000 * 2 * 110, cancelled)
         if (pcm.isEmpty() || pcm.size % 2 != 0) throw ModelServiceException("cloud_format")
         val samples = ByteBuffer.wrap(pcm).order(ByteOrder.LITTLE_ENDIAN).asShortBuffer()
         return SpeechAudio(FloatArray(samples.remaining()) { samples.get() / 32768f }, 24000)
@@ -65,13 +66,8 @@ internal class DeepSeekToolClient(
             connection.setFixedLengthStreamingMode(body.size)
             connection.outputStream.use { it.write(body) }
             val status = connection.responseCode
-            if (status != 200) throw ModelServiceException(when (status) {
-                401, 403 -> "cloud_auth"
-                402 -> "cloud_balance"
-                429, 503 -> "cloud_busy"
-                408, 504 -> "cloud_timeout"
-                else -> "cloud_http"
-            })
+            if (cancelled()) throw ModelServiceException("cloud_cancelled")
+            if (status != 200) throw ModelServiceException.fromHttp(status)
             val result = ByteArrayOutputStream()
             connection.inputStream.use { input ->
                 val chunk = ByteArray(8192)

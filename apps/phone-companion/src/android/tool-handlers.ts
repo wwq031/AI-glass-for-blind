@@ -1,4 +1,5 @@
 import type { AgentEvent } from "../../../../packages/domain/agent/types.ts";
+import { ToolFailure } from "../../../../packages/domain/tools/tool-gateway.ts";
 import type { ObservationProvider, ObservationResult } from "../../../../packages/providers/observation/observation-provider.ts";
 import type { DestinationCandidate, DestinationQuery } from "../../../../packages/providers/navigation/navigation-provider.ts";
 import type { SessionState } from "../../../../packages/domain/session/session-orchestrator.ts";
@@ -16,7 +17,7 @@ export interface PolicyGateway {
     status: string;
     output?: Record<string, unknown>;
     events?: { type: string; payload?: Record<string, unknown> }[];
-    error?: { message?: string };
+    error?: { code?: string; message?: string; retryable?: boolean };
   }>;
 }
 
@@ -99,7 +100,19 @@ interface NativeToolResult {
   completedAt?: string;
   output?: Record<string, unknown>;
   facts?: unknown[];
-  error?: { message?: string };
+  error?: { code?: string; message?: string; retryable?: boolean };
+}
+
+function navigationFailure(error: NativeToolResult["error"]): ToolFailure {
+  switch (error?.code) {
+    case "location_weak":
+    case "permission_denied":
+    case "navigation_not_configured":
+    case "navigation_unavailable":
+      return new ToolFailure(error.code, error.message || "导航服务暂时不可用。", error.retryable === true);
+    default:
+      return new ToolFailure("navigation_unavailable", "导航服务暂时不可用。", true);
+  }
 }
 
 function nativeToolResult(value: unknown, call: ToolCall): NativeToolResult {
@@ -177,6 +190,8 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
   handlers.set("navigation.search_destination", async (call, context): Promise<ToolHandlerOutput> => {
     const generation = runtime.generation();
     const query = call.arguments as unknown as DestinationQuery;
+    if (retired(runtime, context, generation)) return { status: "partial", output: { cancelled: true } };
+    runtime.destinations.clearSession(call.session_id);
     const { planId, actionIndex } = splitCallId(call.call_id);
     const answer = await runtime.native<unknown>("tool.execute", {
       sessionId: call.session_id,
@@ -191,7 +206,7 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
       return { status: "partial", output: { cancelled: true } };
     }
     const result = nativeToolResult(answer, call);
-    if (result.status !== "succeeded") throw new Error(result.error?.message ?? "destination search failed");
+    if (result.status !== "succeeded") throw navigationFailure(result.error);
     const candidates = isRecord(result.output) && Array.isArray(result.output.candidates)
       ? result.output.candidates.map(candidateOf) : [];
     if (candidates.some((candidate) => candidate === undefined)) {
@@ -241,7 +256,7 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
       arguments: { candidate_id: selected.candidate_id, mode: "walking" },
     }, context.state));
     if (started.status !== "succeeded") {
-      throw new Error(started.error?.message ?? "navigation did not start");
+      throw navigationFailure(started.error);
     }
     return {
       output: { candidate_id: selected.candidate_id, name: selected.name, ...started.output },
@@ -266,7 +281,7 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
         return { status: "partial", output: { cancelled: true } };
       }
     }
-    const started = await runtime.native<{ started?: boolean; distanceM?: number; timeSec?: number }>(
+    const started = await runtime.native<{ started?: boolean; distanceM?: number; timeSec?: number; error?: NativeToolResult["error"] }>(
       "policy.navigation.start", { sessionId: call.session_id, candidate });
     if (started === undefined || retired(runtime, context, generation) || runtime.parentAborted()) {
       // A route that started under a call which has since been abandoned is stopped again: the
@@ -276,7 +291,7 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
       }
       return { status: "partial", output: { cancelled: true } };
     }
-    if (started.started !== true) throw new Error("native walking navigation did not confirm start");
+    if (started.started !== true) throw navigationFailure(started.error);
     runtime.onRouteStarted(call.session_id, candidate);
     return {
       output: { candidate_id: candidate.candidate_id, started: true, distance_m: started.distanceM, time_sec: started.timeSec },

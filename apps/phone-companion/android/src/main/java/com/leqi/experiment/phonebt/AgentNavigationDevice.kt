@@ -3,7 +3,6 @@ package com.leqi.experiment.phonebt
 import android.content.Context
 import android.os.Handler
 import android.os.Looper
-import com.amap.api.maps.AMapException as AmapMapException
 import com.amap.api.services.core.AMapException as AmapSearchException
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
@@ -177,13 +176,22 @@ class AgentNavigationDevice(private val context: Context) : AutoCloseable {
 
     private fun search(keyword: String, fix: PhoneLocationAdapter.Fix, callback: SearchCallback) {
         val result = try {
+            val point = fix.amapPoint(context)
             SearchResult.Success(
-                AmapSearchAdapter.search(context, keyword, fix.latitude, fix.longitude),
+                AmapSearchAdapter.search(context, keyword, point.latitude, point.longitude),
             )
         } catch (error: AmapSearchException) {
-            SearchResult.Failure("unknown", "高德地点搜索失败：" + describe(error), true)
-        } catch (error: RuntimeException) {
-            SearchResult.Failure("unknown", "高德地点搜索失败：" + describe(error), true)
+            when (error.errorCode) {
+                AmapSearchException.CODE_AMAP_INVALID_USER_SCODE ->
+                    SearchResult.Failure("navigation_not_configured", "高德未通过应用校验，请核对包名和签名。", false)
+                AmapSearchException.CODE_AMAP_INVALID_USER_KEY, AmapSearchException.CODE_AMAP_USER_KEY_RECYCLED,
+                AmapSearchException.CODE_AMAP_USERKEY_PLAT_NOMATCH, AmapSearchException.CODE_AMAP_INSUFFICIENT_PRIVILEGES,
+                AmapSearchException.CODE_AMAP_SERVICE_NOT_AVAILBALE ->
+                    SearchResult.Failure("navigation_not_configured", "高德地点搜索未获授权，请检查 Android Key 和服务权限。", false)
+                else -> SearchResult.Failure("navigation_unavailable", "高德地点搜索暂时不可用（${error.errorCode}）。", true)
+            }
+        } catch (error: Exception) {
+            SearchResult.Failure("navigation_unavailable", "高德地点搜索暂时不可用。", true)
         }
         main.post { callback.onSearch(result) }
     }
@@ -208,11 +216,10 @@ class AgentNavigationDevice(private val context: Context) : AutoCloseable {
             override fun onFix(fix: PhoneLocationAdapter.Fix) {
                 if (closed || activeWalk !== operation) return
                 try {
-                    navigationAdapter(operation).calculateWalk(fix.latitude, fix.longitude, toLatitude, toLongitude)
-                } catch (error: AmapMapException) {
-                    fail(operation, "高德步行路线计算失败：" + describe(error))
-                } catch (error: RuntimeException) {
-                    fail(operation, "高德步行路线计算失败：" + describe(error))
+                    val point = fix.amapPoint(context)
+                    navigationAdapter(operation).calculateWalk(point.latitude, point.longitude, toLatitude, toLongitude)
+                } catch (error: Exception) {
+                    fail(operation, "高德暂时无法计算这条步行路线。")
                 }
             }
 
@@ -263,12 +270,6 @@ class AgentNavigationDevice(private val context: Context) : AutoCloseable {
     private fun isUsableCoordinate(latitude: Double, longitude: Double): Boolean =
         latitude > -90 && latitude < 90 && longitude > -180 && longitude < 180 &&
             !(Math.abs(latitude) < 0.000001 && Math.abs(longitude) < 0.000001)
-
-    private fun describe(error: Throwable): String {
-        val message = error.message
-        return if (message.isNullOrEmpty()) error.javaClass.simpleName
-        else error.javaClass.simpleName + "：" + message
-    }
 
     /** 把高德导航回调原样转给当前调用方；没有调用方在听就丢掉，不缓存也不补发。 */
     private inner class NavigationBridge(private val operation: WalkOperation) : AmapNaviAdapter.Listener {
