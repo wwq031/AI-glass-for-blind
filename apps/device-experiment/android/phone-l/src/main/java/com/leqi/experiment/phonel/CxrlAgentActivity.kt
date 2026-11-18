@@ -54,19 +54,34 @@ class CxrlAgentActivity : Activity() {
     }
 
     private fun settings() {
-        val options = mutableListOf("对话模型与费用设置", "眼镜使用方法")
-        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) options.add("开发诊断")
-        AlertDialog.Builder(this).setTitle("设置").setItems(options.toTypedArray()) { _, index ->
-            when (index) {
-                0 -> modelSettings()
-                1 -> AlertDialog.Builder(this).setTitle("使用眼镜助手")
-                    .setMessage("连接眼镜，等待就绪提示。\n\n短按开始，听到提示后再短按录音，说完短按结束。\n\n试着说“描述眼前的场景”“读一下这张纸”或“导航到附近的地铁站”。需要拍照或选择目的地时，请按眼镜提示确认。\n\n结束时，在手机首页点“停止任务与连接”。")
-                    .setPositiveButton("知道了", null).show()
-                else -> AlertDialog.Builder(this).setTitle("开发诊断")
+        val controls = column().apply { pad(16, 8) }
+        val sheet = AlertDialog.Builder(this).setTitle("设置与使用帮助")
+            .setView(ScrollView(this).apply { addView(controls) }).create()
+        fun entry(title: String, open: () -> Unit) {
+            controls.item(action(title, paper, ink) { sheet.dismiss(); open() }, 8)
+        }
+        entry("眼镜使用方法") {
+            AlertDialog.Builder(this).setTitle("使用眼镜助手")
+                .setMessage("连接眼镜，等待就绪提示。\n\n短按开始，听到提示后再短按录音，说完短按结束。\n\n你可以说“描述眼前的场景”“读一下这张纸”或“导航到附近的地铁站”。按眼镜提示确认拍照或目的地。\n\n结束时，在手机首页选“停止任务与连接”。")
+                .setPositiveButton("知道了", null).show()
+        }
+        entry("最近一次对话") {
+            val session = GuideSession.state
+            val last = listOfNotNull(session.question.takeIf { it.isNotBlank() }?.let { "你说：$it" },
+                session.answer.takeIf { it.isNotBlank() }?.let { "助手说：$it" }).joinToString("\n\n")
+            AlertDialog.Builder(this).setTitle("最近一次对话").setMessage(last.ifEmpty { "当前没有对话。" })
+                .setPositiveButton("关闭", null).show()
+        }
+        entry("对话模型与费用设置", ::modelSettings)
+        if (BuildConfig.DEVELOPER_TOOLS && BuildConfig.DEBUG) {
+            entry("开发诊断") {
+                AlertDialog.Builder(this).setTitle("开发诊断")
                     .setMultiChoiceItems(arrayOf("下次连接记录识别与播报文字"), booleanArrayOf(textDiagnostics)) { _, _, checked -> textDiagnostics = checked }
                     .setPositiveButton("完成", null).setNeutralButton("戒指输入诊断") { _, _ -> connect(true) }.show()
             }
-        }.show()
+        }
+        controls.item(action("返回首页", paper, ink) { sheet.dismiss() }, 8)
+        sheet.show()
     }
 
     private fun navigationSettings() {

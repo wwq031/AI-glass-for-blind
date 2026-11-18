@@ -11,7 +11,6 @@ import android.media.AudioFormat
 import android.media.AudioTrack
 import android.net.Uri
 import android.os.Bundle
-import android.view.Gravity
 import android.view.View
 import android.widget.*
 import java.io.ByteArrayOutputStream
@@ -24,7 +23,6 @@ class PictureActivity : Activity() {
     @Volatile private var closed = false
     @Volatile private var model: DeepSeekClient? = null
     @Volatile private var tools: DeepSeekToolClient? = null
-    private lateinit var image: ImageView
     private lateinit var identify: Button
     private lateinit var camera: Button
     private lateinit var autoRead: CheckBox
@@ -36,7 +34,7 @@ class PictureActivity : Activity() {
     private lateinit var speak: Button
     private lateinit var output: TextView
     private lateinit var caption: TextView
-    private lateinit var bitmap: Bitmap
+    private var bitmap: Bitmap? = null
     private var answer = ""
     private var busy = false
     private var reading = false
@@ -45,55 +43,35 @@ class PictureActivity : Activity() {
         super.onCreate(savedInstanceState)
         reading = intent.getBooleanExtra("read", false)
         pendingCamera = savedInstanceState?.getString("camera")?.let(Uri::parse)
-        val body = column().apply { pad(20, 16) }
-        val back = action("返回首页", Color.WHITE, forest) { finish() }
-        val header = LinearLayout(this).apply { gravity = Gravity.CENTER_VERTICAL; addView(back) }
-        body.item(header)
-        body.item(heading(if (reading) "阅读文字" else "看图描述", 30), 20)
-        body.item(label("确认后将这张图发送给 DeepSeek。", 15, muted), 7)
-        val card = column().apply { pad(14, 14); background = shape(Color.WHITE, 18) }
-        caption = label("示例图片 · 图书馆公告", 16, forest, true).apply { accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
-        card.item(caption)
-        bitmap = sample()
-        image = ImageView(this).apply { setImageBitmap(bitmap); scaleType = ImageView.ScaleType.FIT_CENTER
-            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO }
-        card.addView(image, LinearLayout.LayoutParams(-1, dp(168)).apply { topMargin = dp(10) })
-        camera = action("用手机拍照", paper, forest, ::takePhoto)
-        card.item(camera, 10)
-        select = action("从手机选择图片", paper, forest) {
+        val body = column().apply { pad(16, 14) }
+        body.item(heading(if (reading) "读文字" else "听图片描述", 28))
+        camera = action("用手机拍照", forest, Color.WHITE, ::takePhoto)
+        body.item(camera, 12)
+        select = action("从相册选图", Color.WHITE, ink) {
             startActivityForResult(Intent(Intent.ACTION_OPEN_DOCUMENT).setType("image/*").addCategory(Intent.CATEGORY_OPENABLE), 41)
         }
-        card.item(select, 10); body.item(card, 18)
-        identify = action(if (reading) "识别图片文字" else "描述这张图片", forest, Color.WHITE, ::recognize)
+        body.item(select, 10)
+        identify = action("确认并识别", forest, Color.WHITE, ::recognize).apply { isEnabled = false }
+        body.item(identify, 10)
+        speak = action("朗读结果", lime, forest) {
+            if (speaking) stopPlayback() else readAloud()
+        }.apply { isEnabled = false }
+        body.item(speak, 10)
+        body.item(action("返回首页", Color.WHITE, ink) { finish() }, 10)
+        caption = label("请先拍照或从相册选图。确认识别后，图片会发送给 DeepSeek。", 18, muted).apply {
+            accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
+        }
+        body.item(caption, 14)
         val prefs = getSharedPreferences("accessibility", MODE_PRIVATE)
         autoRead = CheckBox(this).apply {
-            text = "识别后自动朗读"; textSize = 17f; setTextColor(ink); minHeight = dp(48)
+            text = "识别后自动朗读"; textSize = 20f; setTextColor(ink); minHeight = dp(64)
             isChecked = prefs.getBoolean("autoRead", true)
             setOnCheckedChangeListener { _, enabled -> prefs.edit().putBoolean("autoRead", enabled).apply() }
         }
         body.item(autoRead, 8)
-        body.item(identify, 6)
-        output = label("", 18).apply { setTextIsSelectable(true); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
-        speak = action("朗读结果", lime, forest) {
-            if (speaking) stopPlayback() else readAloud()
-        }.apply { visibility = View.GONE }
-        body.item(speak, 12)
+        output = label("", 20).apply { setTextIsSelectable(true); accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE }
         body.item(output, 18)
         page(body)
-    }
-
-    private fun sample(): Bitmap {
-        val b = Bitmap.createBitmap(960, 460, Bitmap.Config.ARGB_8888)
-        val c = Canvas(b); c.drawColor(Color.rgb(241, 239, 221))
-        val p = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = forest }
-        c.drawRect(0f, 0f, 22f, 460f, p)
-        p.textSize = 66f; p.typeface = Typeface.DEFAULT_BOLD
-        c.drawText("图书馆开放时间", 70f, 130f, p)
-        c.drawRect(70f, 163f, 880f, 167f, p)
-        p.typeface = Typeface.DEFAULT; p.textSize = 43f
-        c.drawText("周一至周五   08:30 – 21:00", 70f, 258f, p)
-        c.drawText("周六、周日   09:00 – 17:00", 70f, 347f, p)
-        return b
     }
 
     private fun takePhoto() {
@@ -123,7 +101,11 @@ class PictureActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requestCode !in 41..42) return
-        if (resultCode != RESULT_OK) { if (requestCode == 42) discardCamera(); return }
+        if (resultCode != RESULT_OK) {
+            if (requestCode == 42) discardCamera()
+            caption.text = if (bitmap == null) "已取消。请拍照或从相册选图。" else "已取消，仍选用上一张图片。"
+            return
+        }
         val uri = (if (requestCode == 42) pendingCamera else data?.data) ?: return
         runJob("正在读取图片…", {
             try {
@@ -136,14 +118,16 @@ class PictureActivity : Activity() {
             } finally { if (requestCode == 42) runCatching { contentResolver.delete(uri, null, null) } }
         }) {
             if (requestCode == 42) pendingCamera = null
-            bitmap = it; image.setImageBitmap(it); caption.text = if (requestCode == 42) "已拍摄，点击下方按钮识别" else "已选图片，点击下方按钮识别"
-            answer = ""; output.text = ""; speak.visibility = View.GONE
+            bitmap = it
+            identify.isEnabled = true
+            caption.text = "图片已就绪。请选“确认并识别”发送图片。"
+            answer = ""; output.text = ""; speak.isEnabled = false
         }
     }
 
     private fun recognize() {
-        val selected = bitmap
-        answer = ""; speak.visibility = View.GONE
+        val selected = bitmap ?: return
+        answer = ""; speak.isEnabled = false
         output.accessibilityLiveRegion = View.ACCESSIBILITY_LIVE_REGION_POLITE
         runJob(if (reading) "正在提取图片中的文字…" else "正在观察图片…", {
             val settings = AgentModelSettings(this)
@@ -169,7 +153,7 @@ class PictureActivity : Activity() {
             answer = it
             output.accessibilityLiveRegion = if (autoRead.isChecked) View.ACCESSIBILITY_LIVE_REGION_POLITE else View.ACCESSIBILITY_LIVE_REGION_NONE
             output.text = it.ifBlank { if (reading) "没有识别到清晰的文字，请换一张图片。" else "未能描述这张图片，请重试。" }
-            speak.visibility = if (it.isBlank()) View.GONE else View.VISIBLE
+            speak.isEnabled = it.isNotBlank()
             val screenReader = getSystemService(AccessibilityManager::class.java).isTouchExplorationEnabled
             if (autoRead.isChecked && it.isNotBlank() && visible && !screenReader) readAloud()
         }
@@ -222,12 +206,13 @@ class PictureActivity : Activity() {
     private fun <T> runJob(message: String, job: () -> T, done: (T) -> Unit) {
         if (busy) return
         busy = true; select.isEnabled = false; camera.isEnabled = false; identify.isEnabled = false; speak.isEnabled = speaking
+        output.accessibilityLiveRegion = if (speaking) View.ACCESSIBILITY_LIVE_REGION_NONE else View.ACCESSIBILITY_LIVE_REGION_POLITE
         output.text = if (answer.isEmpty()) message else "$answer\n\n$message"
         work.execute {
             val result = runCatching(job)
             runOnUiThread {
                 if (!closed) {
-                    busy = false; select.isEnabled = true; camera.isEnabled = true; identify.isEnabled = true; speak.isEnabled = true
+                    busy = false; select.isEnabled = true; camera.isEnabled = true; identify.isEnabled = bitmap != null; speak.isEnabled = answer.isNotBlank()
                     val stopped = speaking && stopAudio
                     speaking = false; speak.text = "朗读结果"
                     if (stopped) { output.text = answer; return@runOnUiThread }
