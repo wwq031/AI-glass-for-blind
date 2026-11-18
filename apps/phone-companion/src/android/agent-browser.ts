@@ -655,18 +655,22 @@ const agent: LlmAgent = {
     // Whatever this turn awaits, it must not act once the operation it belonged to is gone.
     const generation = operationGeneration;
 
-    // A navigation reminder is deterministic and must not wait on a model: the policy owns it.
-    if (input.event.source === "navigation" && input.event.sessionId === glasses.sessionId) {
-      const reminder = reminders.create(toNavigationEvent(input.event));
-      if (reminder) void speech.enqueue(reminder.text, reminder.priority, input.event.sessionId);
-    }
-
     const metadata = {
       planId: `model-${input.event.eventId}-${++nextModelPlanId}`,
       sessionId: input.event.sessionId,
       eventId: input.event.eventId,
       createdAt: new Date().toISOString(),
     };
+    if (input.event.source === "navigation" && input.event.sessionId === glasses.sessionId) {
+      const reminder = reminders.create(toNavigationEvent(input.event));
+      if (reminder) void speech.enqueue(reminder.text, reminder.priority, input.event.sessionId);
+      // 高德的常规定位与转向回调只更新路线、触发提醒。问答无需排在这些回调的云推理之后。
+      if (input.event.type !== "navigation.intersection_approaching" &&
+          input.event.type !== "navigation.crosswalk_approaching") {
+        return { ...metadata, goal: "继续导航并等待用户提问",
+          actions: [{ kind: "wait", eventTypes: ["speech.input", "user.cancel"] }] };
+      }
+    }
     try {
       const planned = await generateValidatedPlan(plannerPrompt(input), async (prompt) => {
         const response = await nativeStep<string>(generation, "model.generate", {

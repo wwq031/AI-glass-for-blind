@@ -766,6 +766,15 @@ test("导航中答完自动待命；一次语音窗口可直接追问且路线�
   await harness.say("confirm", "第一个");
   assert.equal(ready().length, 1);
   const route = harness.liveSessionId();
+  const before = harness.modelPrompts.length;
+  for (let index = 0; index < 12; index++) {
+    harness.deliver(`progress-${index}`, "native.navigation", { sessionId: route, kind: "progress", remainDistanceM: 320 - index });
+  }
+  harness.deliver("turn", "native.navigation", { sessionId: route, kind: "navigation_text", detail: "前方右转" });
+  await harness.settle();
+  assert.equal(harness.modelPrompts.length, before, "定位与转向回调不占用对话模型");
+  assert.ok(harness.speechTexts().some(text => text.includes("前方右转")));
+  assert.equal(ready().length, 1, "路线回调保留用户已有的录音入口");
   harness.deliver("question", "native.speech", { purpose: ready()[0]!.payload.payload, transcript: "现在能帮我做什么" });
   await harness.settle();
   assert.equal(harness.speechTexts().at(-1), HELP_SPEECH);
