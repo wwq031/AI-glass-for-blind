@@ -91,7 +91,7 @@ class CxrlAgentService : Service() {
         device = CxrlAgentDevice(this, ::onDevice) { reason ->
             retire()
             envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", reason))
-            GuideSession.show(GuideState(phase = "眼镜连接已断开，请重新连接。"))
+            GuideSession.show(GuideState(phase = "连接中断：$reason。请重新连接眼镜。"))
             status("眼镜断开：$reason；请重新连接")
         }
         worker.execute {

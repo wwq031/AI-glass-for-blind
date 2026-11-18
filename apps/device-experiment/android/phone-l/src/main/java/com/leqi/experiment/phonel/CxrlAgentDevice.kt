@@ -63,7 +63,7 @@ internal class CxrlAgentDevice(
             manager.create(SessionConfig(sessionType = SessionType.CUSTOM_APP,
                 glassesPackageName = "com.leqi.experiment.glasses",
                 glassesActivityName = "com.leqi.experiment.glasses.GlassesActivity",
-                aiInterceptMode = AiInterceptMode.ALLOW_WITH_PAUSE))
+                aiInterceptMode = AiInterceptMode.BLOCK_AI))
         } catch (_: Exception) {
             disconnected("CXR-L 无法创建会话，请重新连接")
             return
@@ -77,9 +77,12 @@ internal class CxrlAgentDevice(
                 if (!success) dispatch { fail("CXR-L 连接失败：${errorCode?.name}") }
             }
             override fun onSessionStarted() { dispatch {
-                command("link.bind", nonce) { result ->
-                    if (result.isFailure) fail("眼镜端握手发送失败")
+                // 眼镜应用可能在会话启动后才订阅通道。同一握手标识可安全重发。
+                fun bind() {
+                    if (generation == attempt && !ready) command("link.bind", nonce)
                 }
+                bind()
+                for (delay in listOf(1000L, 3500L, 8000L)) main.postDelayed({ bind() }, delay)
                 main.postDelayed({ if (generation == attempt && !ready) fail("眼镜端握手超时") }, 15000)
             } }
             override fun onSessionPaused(reason: PausedReason) { dispatch { fail("会话暂停：${reason.name}") } }
@@ -101,8 +104,10 @@ internal class CxrlAgentDevice(
                     if (sequence <= lastSequence) return@dispatch
                     lastSequence = sequence
                     if (packet.optString("type") == "link.ready") {
-                        ready = true
-                        event(JSONObject().put("type", "link.ready"))
+                        if (!ready) {
+                            ready = true
+                            event(JSONObject().put("type", "link.ready"))
+                        }
                     } else if (ready) event(packet)
                 }
             }
@@ -116,7 +121,8 @@ internal class CxrlAgentDevice(
             override fun onScreenOff() = revoke("眼镜已灭屏")
             override fun onScreenOn() = Unit
             override fun onLauncherResumed() = revoke("眼镜返回桌面")
-            override fun onAiWake() = revoke("官方助手已唤醒")
+            // 唤醒通知也会在会话仍然可用时送达，实际资源中断由下方及生命周期回调撤销。
+            override fun onAiWake() = Unit
             override fun onAiInterruptChanged(interruptWake: Boolean) { if (interruptWake) revoke("官方助手中断任务") }
         })
         sdk.execute { runCatching { if (attempt == generation) created.connect(token) }.onFailure {

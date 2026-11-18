@@ -19,20 +19,26 @@ class CxrlAgentDeviceTest {
     private class Fixture {
         val errors = mutableListOf<String>()
         val tokens = mutableListOf<String>()
+        val modes = mutableListOf<AiInterceptMode>()
+        lateinit var glassesEvents: IGlassesEventListener
+        lateinit var commands: ICustomCmdSessionCallback
         var idle = false
         var closes = 0
         var creates = 0
         var rejectCreate = false
-        private val manager = proxy<CxrSessionManager> { method, _ ->
+        private val manager = proxy<CxrSessionManager> { method, params ->
             check(method == "create")
             check(!rejectCreate && (creates == 0 || idle))
+            modes += (params!!.single() as SessionConfig).aiInterceptMode
             creates++
             proxy<CxrSession> { call, args ->
                 when (call) {
                     "getState" -> if (idle) SessionState.Idle else SessionState.Terminating
                     "connect" -> { tokens += args!![0] as String; null }
                     "close" -> { closes++; null }
-                    "addLifecycleCallback", "addCustomCmdCallback", "addGlassesEventListener" -> null
+                    "addCustomCmdCallback" -> { commands = args!![0] as ICustomCmdSessionCallback; null }
+                    "addGlassesEventListener" -> { glassesEvents = args!![0] as IGlassesEventListener; null }
+                    "addLifecycleCallback" -> null
                     else -> error("Unexpected SDK call: $call")
                 }
             }
@@ -49,6 +55,25 @@ class CxrlAgentDeviceTest {
         fun advance(ms: Long) = shadowOf(Looper.getMainLooper()).idleFor(ms, TimeUnit.MILLISECONDS)
     }
 
+    @Test fun wakeNotificationKeepsReadySessionButActualInterruptionClosesIt() {
+        val f = Fixture()
+        f.device.connect("first")
+        val nonce = CxrlAgentDevice::class.java.getDeclaredField("nonce").apply { isAccessible = true }.get(f.device)
+        val packet = org.json.JSONObject().put("link", nonce).put("sequence", 1).put("type", "link.ready")
+        f.commands.onCustomCmdResult("rk_custom_key", packet.toString().toByteArray())
+        f.advance(1)
+        assertTrue(f.device.ready)
+        f.glassesEvents.onAiWake()
+        f.advance(1)
+        assertTrue(f.device.ready)
+        assertTrue(f.errors.isEmpty())
+        f.glassesEvents.onAiInterruptChanged(true)
+        f.advance(1)
+        assertEquals(listOf("官方助手中断任务"), f.errors)
+        assertEquals(false, f.device.ready)
+        f.device.close()
+    }
+
     @Test fun reconnectWaitsForIdleAndUsesOnlyTheMostRecentToken() {
         val f = Fixture()
         f.device.connect("first")
@@ -61,6 +86,7 @@ class CxrlAgentDeviceTest {
         f.idle = true
         f.advance(200)
         assertEquals(listOf("first", "third"), f.tokens)
+        assertEquals(listOf(AiInterceptMode.BLOCK_AI, AiInterceptMode.BLOCK_AI), f.modes)
         assertTrue(f.errors.isEmpty())
         f.device.close()
     }

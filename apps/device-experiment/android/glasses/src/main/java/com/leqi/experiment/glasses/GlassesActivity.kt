@@ -56,26 +56,41 @@ class GlassesActivity : Activity() {
         super.onCreate(state)
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         text = TextView(this).apply { textSize = 22f; text = "等待手机连接" }; setContentView(text)
-        bridge = CXRServiceBridge(applicationContext)
-        val subscribed = bridge.subscribe("rk_custom_client", CXRServiceBridge.MsgCallback { _, caps, stream ->
-            val packet = runCatching { JSONObject(caps.at(0).string) }.getOrElse {
-                runCatching { JSONObject(stream.toString(Charsets.UTF_8)) }.getOrNull() ?: return@MsgCallback
-            }
-            main.post { runCatching { receive(packet) }.onFailure {
-                reset(); event("user.cancel", "invalid-device-command"); text.text = "设备指令异常，任务已停止"
-            } }
-        })
-        if (subscribed != 0) text.text = "设备通道订阅失败，请重新打开"
+        bridge = sharedBridge ?: CXRServiceBridge(applicationContext).also { sharedBridge = it }
+        owner = this
+        if (!subscribed) {
+            subscribed = bridge.subscribe("rk_custom_client", CXRServiceBridge.MsgCallback { _, caps, stream ->
+                val target = owner ?: return@MsgCallback
+                val packet = runCatching { JSONObject(caps.at(0).string) }.getOrElse {
+                    runCatching { JSONObject(stream.toString(Charsets.UTF_8)) }.getOrNull() ?: return@MsgCallback
+                }
+                target.main.post { if (owner === target) target.acceptCommand(packet) }
+            }) == 0
+        }
+        if (!subscribed) text.text = "设备通道订阅失败，请重新打开"
         bridge.appLaunch()
         registerReceiver(receiver, IntentFilter().apply {
             addAction("com.android.action.ACTION_SPRITE_BUTTON_CLICK")
             addAction("com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS")
         })
     }
+    private fun acceptCommand(packet: JSONObject) {
+        runCatching { receive(packet) }.onFailure {
+            reset(); event("user.cancel", "invalid-device-command"); text.text = "设备指令异常，任务已停止"
+        }
+    }
+    // SDK 的订阅没有对应的注销方法。每个进程只订阅一次，页面重建时交给当前实例。
+    private companion object {
+        var sharedBridge: CXRServiceBridge? = null
+        var subscribed = false
+        @Volatile var owner: GlassesActivity? = null
+    }
     private fun receive(packet: JSONObject) {
         val type = packet.optString("type")
         val payload = packet.optString("payload")
         if (type == "link.bind") {
+            if (payload.isBlank()) return
+            if (payload == link) { event("link.ready"); return }
             diagnosticOnly = false
             reset(); link = payload; sequence = 0
             event("link.ready"); text.text = "已连接，等待手机模型就绪"; return
@@ -229,5 +244,5 @@ class GlassesActivity : Activity() {
         return super.onKeyUp(code, event)
     }
     override fun onPause() { reset(); if (link.isNotBlank()) event("user.cancel", "glasses-paused"); super.onPause() }
-    override fun onDestroy() { reset(); alertTone?.release(); link = ""; unregisterReceiver(receiver); super.onDestroy() }
+    override fun onDestroy() { if (owner === this) owner = null; reset(); alertTone?.release(); link = ""; unregisterReceiver(receiver); super.onDestroy() }
 }
