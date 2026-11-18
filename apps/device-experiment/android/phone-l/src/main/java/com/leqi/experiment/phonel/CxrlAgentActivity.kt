@@ -11,7 +11,6 @@ import android.text.InputType
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Button
-import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.RadioButton
@@ -24,6 +23,8 @@ import com.rokid.cxr.session.*
 /** 手机只负责首次授权和故障恢复；任务开始、录音确认、拍照确认均在眼镜完成。 */
 class CxrlAgentActivity : Activity() {
     private lateinit var status: TextView
+    private lateinit var home: GuideHome
+    private val render: (GuideState) -> Unit = { home.render(it) }
     private lateinit var manager: CxrSessionManager
     private var requesting = false
     private var destroyed = false
@@ -34,29 +35,38 @@ class CxrlAgentActivity : Activity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         manager = CxrSessionManager.getInstance(applicationContext)
-        val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24) }
-        status = TextView(this).apply { textSize = 20f; text = "乐奇助盲\n首次连接后，在眼镜短按开始。录音中再短按结束。结束任务请在手机点停止任务与连接。" }
-        layout.addView(status)
-        fun button(title: String, action: () -> Unit) {
-            layout.addView(Button(this).apply { text = title; setOnClickListener { action() } })
-        }
-        button("授权并连接眼镜") { connect() }
-        button("对话模型与费用设置") { modelSettings() }
-        button("高德导航设置") { navigationSettings() }
-        button("停止任务与连接") {
-            requesting = false
-            diagnosticDevice?.close(); diagnosticDevice = null
-            stopService(Intent(this, CxrlAgentService::class.java)); status.text = "已停止；再次连接不会恢复旧任务"
-        }
-        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
-            layout.addView(CheckBox(this).apply {
-                text = "下次连接记录识别与播报文字（诊断用）"
-                isSaveEnabled = false
-                setOnCheckedChangeListener { _, checked -> textDiagnostics = checked }
-            })
-            button("戒指输入诊断（只记录）") { connect(diagnostics = true) }
-        }
-        setContentView(ScrollView(this).apply { addView(layout) })
+        home = GuideHome(this, { connect() }, ::disconnect, ::settings, { read ->
+            if (!AgentModelSettings(this).hasKey) modelSettings()
+            else startActivity(Intent(this, PictureActivity::class.java).putExtra("read", read))
+        }, ::navigationSettings)
+        status = home.feedback
+    }
+
+    override fun onStart() { super.onStart(); GuideSession.watch(render) }
+    override fun onStop() { GuideSession.remove(render); super.onStop() }
+
+    private fun disconnect() {
+        requesting = false
+        diagnosticDevice?.close(); diagnosticDevice = null
+        stopService(Intent(this, CxrlAgentService::class.java))
+        GuideSession.show(GuideState())
+        status.text = "任务已停止，眼镜已断开。"
+    }
+
+    private fun settings() {
+        val options = mutableListOf("对话模型与费用设置", "眼镜使用方法")
+        if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) options.add("开发诊断")
+        AlertDialog.Builder(this).setTitle("设置").setItems(options.toTypedArray()) { _, index ->
+            when (index) {
+                0 -> modelSettings()
+                1 -> AlertDialog.Builder(this).setTitle("使用眼镜助手")
+                    .setMessage("连接眼镜，等待就绪提示。\n\n短按开始，听到提示后再短按录音，说完短按结束。\n\n试着说“描述眼前的场景”“读一下这张纸”或“导航到附近的地铁站”。需要拍照或选择目的地时，请按眼镜提示确认。\n\n结束时，在手机首页点“停止任务与连接”。")
+                    .setPositiveButton("知道了", null).show()
+                else -> AlertDialog.Builder(this).setTitle("开发诊断")
+                    .setMultiChoiceItems(arrayOf("下次连接记录识别与播报文字"), booleanArrayOf(textDiagnostics)) { _, _, checked -> textDiagnostics = checked }
+                    .setPositiveButton("完成", null).setNeutralButton("戒指输入诊断") { _, _ -> connect(true) }.show()
+            }
+        }.show()
     }
 
     private fun navigationSettings() {
@@ -77,9 +87,10 @@ class CxrlAgentActivity : Activity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 501 && checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED) connect(diagnosticMode)
         if (requestCode == 502) {
-            status.text = "定位权限已处理。使用眼镜导航前，请点击授权并连接眼镜。"
-            AmapNavigationPanel.show(this)
+            if (com.leqi.experiment.phonebt.PhoneLocationAdapter.hasPermission(this)) AmapNavigationPanel.show(this)
+            else status.text = "搜索附近地点需要定位权限，可在系统设置中开启。"
         }
     }
 
@@ -95,6 +106,7 @@ class CxrlAgentActivity : Activity() {
         models.check(if (settings.model == AgentModelSettings.PRO) 102 else 101)
         content.addView(models)
         val key = EditText(this).apply {
+            contentDescription = if (settings.hasKey) "DeepSeek API 密钥，已保存，可留空" else "DeepSeek API 密钥，必填"
             hint = if (settings.hasKey) "已保存密钥；留空保留，输入则替换" else "在这里填写你的 DeepSeek API Key"
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_PASSWORD
             setSingleLine(true)
@@ -119,7 +131,7 @@ class CxrlAgentActivity : Activity() {
                     key.text.toString()) }
                 if (saved.isFailure) { feedback.text = "保存失败，请检查密钥是否包含空格，或清除旧密钥后重新填写"; return@setOnClickListener }
                 stopService(Intent(this, CxrlAgentService::class.java))
-                status.text = "设置已保存，请点击授权并连接眼镜。当前使用 DeepSeek 全接入"
+                status.text = "设置已保存，请在首页连接眼镜。当前使用 DeepSeek 全接入"
                 key.text.clear(); dialog.dismiss()
             }
             dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener {
@@ -149,7 +161,7 @@ class CxrlAgentActivity : Activity() {
             val requested = if (!diagnosticMode && Build.VERSION.SDK_INT >= 33)
                 missing + Manifest.permission.POST_NOTIFICATIONS else missing
             requestPermissions(requested.toTypedArray(), 501)
-            status.text = "请完成权限授权，再点击连接；授权本身不会录音或拍照"
+            status.text = "请允许蓝牙权限以连接眼镜。"
             return
         }
         if (!manager.isRokidAppInstalled(this) || manager.checkRokidAppCompatibility(this) !is RokidAppStatus.Compatible) {
@@ -173,9 +185,10 @@ class CxrlAgentActivity : Activity() {
         if (token == null) { status.text = "授权未完成，请重试"; return }
         if (diagnosticMode) { startInputDiagnostics(token); return }
         // Token 只在内存中的启动信封传递，不保存、不记录。
+        GuideSession.show(GuideState(active = true, phase = "正在连接眼镜，请稍候。"))
         startForegroundService(Intent(this, CxrlAgentService::class.java).putExtra("token", token)
             .putExtra("textDiagnostics", textDiagnostics))
-        status.text = "正在准备 DeepSeek 和眼镜连接，进度见通知。\n眼镜提示就绪后：短按开始，提示后短按录音，再短按结束。结束任务请在手机点停止任务与连接。"
+        status.text = ""
     }
     /** 诊断连接由页面持有，原始输入只写日志；不启动模型和业务服务。 */
     private fun startInputDiagnostics(token: String) {

@@ -19,9 +19,10 @@
             <action android:name="com.rokid.sprite.aiapp.externalapp.AUTHORIZATION"/>
         </intent>
     </queries>
-    <application android:allowBackup="false" android:label="乐奇助盲·DeepSeek" android:theme="@android:style/Theme.Material.Light.NoActionBar">
+    <application android:allowBackup="false" android:label="乐奇助盲" android:icon="@drawable/guide_icon" android:theme="@android:style/Theme.Material.Light.NoActionBar">
         <meta-data android:name="com.amap.api.v2.apikey" android:value="${amapAndroidKey}"/>
         <service android:name=".CxrlAgentService" android:exported="false" android:foregroundServiceType="connectedDevice|location"/>
+        <activity android:name=".PictureActivity" android:exported="false"/>
         <activity android:name=".CxrlAgentActivity" android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN"/>

@@ -91,6 +91,7 @@ class CxrlAgentService : Service() {
         device = CxrlAgentDevice(this, ::onDevice) { reason ->
             retire()
             envelope("native.device", JSONObject().put("kind", "disconnected").put("reason", reason))
+            GuideSession.show(GuideState(phase = "眼镜连接已断开，请重新连接。"))
             status("眼镜断开：$reason；请重新连接")
         }
         worker.execute {
@@ -106,6 +107,7 @@ class CxrlAgentService : Service() {
             main.post {
                 if (!closed) {
                     cloudConfigured = outcome.isSuccess
+                    if (device.ready || !cloudConfigured) showReadiness()
                     if (device.ready) device.command("status", if (cloudConfigured) "准备好了，短按开始；结束请在手机点停止任务与连接" else "请在手机检查 DeepSeek 密钥设置")
                     status(if (cloudConfigured) "DeepSeek 密钥已载入；连接后按键开始"
                         else if (outcome.exceptionOrNull() is ModelServiceException) "请在对话模型设置中填写有效的 DeepSeek 密钥"
@@ -138,6 +140,12 @@ class CxrlAgentService : Service() {
             types = types or android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_LOCATION
         }
         startForeground(1, notification, types)
+    }
+
+    private fun showReadiness() {
+        val ready = device.ready && cloudConfigured
+        GuideSession.show(GuideSession.state.copy(active = true, ready = ready,
+            phase = if (ready) "短按眼镜开始，按提示录音，再短按结束。" else "正在等待眼镜或云服务配置，请检查连接和密钥。"))
     }
 
     private fun status(text: String) { main.post {
@@ -215,6 +223,7 @@ class CxrlAgentService : Service() {
                 }
                 "error" -> {
                     diagnostic("agent.error", "id=$id detail=${message.optString("error")}")
+                    GuideSession.show(GuideSession.state.copy(phase = "本轮任务未完成，请按眼镜提示重试。"))
                     status("本轮任务未完成，请检查手机提示后重试")
                 }
                 "event.result" -> diagnostic("event.result", "id=$id rejection=${payload.optJSONObject("rejection")?.optString("code")} tools=${payload.optJSONArray("toolResults")}")
@@ -229,8 +238,10 @@ class CxrlAgentService : Service() {
         val tag = request.optString("payload")
         when (type) {
             "task.cancel" -> retire(notifyDevice = false)
-            "voice.arm" -> { check(microphone == null && photoCallback == null); voiceTag = tag; photoTag = null }
-            "entrance.arm" -> { check(microphone == null && photoCallback == null); photoTag = tag; voiceTag = null }
+            "voice.arm" -> { check(microphone == null && photoCallback == null); voiceTag = tag; photoTag = null
+                GuideSession.show(GuideSession.state.copy(phase = "请短按眼镜开始录音。")) }
+            "entrance.arm" -> { check(microphone == null && photoCallback == null); photoTag = tag; voiceTag = null
+                GuideSession.show(GuideSession.state.copy(phase = "将眼镜朝向目标，短按确认拍照。")) }
             "voice.disarm" -> { voiceTag = null; stopRecording(false) }
             "entrance.disarm" -> {
                 photoTag = null
@@ -252,11 +263,12 @@ class CxrlAgentService : Service() {
         val tag = packet.optString("payload")
         when (type) {
             "link.ready" -> {
+                showReadiness()
                 status("眼镜已连接，读取云服务配置后可按键开始")
                 device.command("status", if (cloudConfigured) "准备好了，短按开始；结束请在手机点停止任务与连接" else "正在读取 DeepSeek 配置，请稍候")
                 return
             }
-            "play.received" -> return // 收齐音频后眼镜开始播放，完成以 play.done 为准。
+            "play.received" -> { if (plays.containsKey(tag)) GuideSession.show(GuideSession.state.copy(phase = "眼镜正在播报…")); return } // 收齐音频后眼镜开始播放，完成以 play.done 为准。
             "play.done", "play.failed" -> {
                 diagnostic(type, "playId=$tag")
                 plays.remove(tag)?.invoke(type == "play.done"); return
@@ -304,6 +316,7 @@ class CxrlAgentService : Service() {
         microphone = callback
         current.addAudioCallback(callback)
         if (!current.startAudioStream().isSuccess) { stopRecording(false); device.fail("无法开启眼镜麦克风"); return }
+        GuideSession.show(GuideSession.state.copy(phase = "正在听，说完后短按眼镜结束。", question = "", answer = ""))
         device.command("voice.started", tag)
         main.postDelayed({ if (pcm === bytes && attempt == generation) stopRecording(true) }, 15000)
     }
@@ -324,6 +337,7 @@ class CxrlAgentService : Service() {
         val finish: () -> Unit = {
             audioStop = null; microphoneSession = null; microphone = null
             if (callback != null) current?.removeAudioCallback(callback)
+            GuideSession.show(GuideSession.state.copy(phase = "正在识别语音…"))
             device.command("voice.stopped")
             transcribe(bytes.toByteArray(), tag, attempt)
         }
@@ -345,7 +359,9 @@ class CxrlAgentService : Service() {
             main.post {
                 if (!closed && attempt == generation) {
                     val payload = JSONObject().put("purpose", tag)
+                    result.onFailure { GuideSession.show(GuideSession.state.copy(phase = "语音识别未完成，请按眼镜提示重试。")) }
                     result.onSuccess {
+                        GuideSession.show(GuideSession.state.copy(question = it, phase = "已收到提问，正在处理…"))
                         textTrace.record("asr", "cxrl-${counter + 1}", it)
                         payload.put("transcript", it)
                     }
@@ -390,6 +406,7 @@ class CxrlAgentService : Service() {
                 main.post { if (attempt == generation) device.fail("眼镜拍照失败") }
             }
         }
+        GuideSession.show(GuideSession.state.copy(phase = "正在获取已确认拍摄的画面…"))
         photoCallback = callback; photoSession = current
         current.addImageCallback(callback)
         if (!current.takePhoto(640, 480, 80).isSuccess) device.fail("无法发起眼镜拍照")
@@ -404,6 +421,7 @@ class CxrlAgentService : Service() {
         if (!device.ready || !cloudConfigured || utterance != null) { completed(false); return }
         val attempt = generation
         val speechId = UUID.randomUUID().toString()
+        GuideSession.show(GuideSession.state.copy(answer = text, phase = "正在准备播报…"))
         textTrace.record("speech", speechId, text)
         diagnostic("speech.request", "playId=$speechId chars=${text.length}")
         val pipeline = CxrlSpeechPlayback(
@@ -411,6 +429,8 @@ class CxrlAgentService : Service() {
             play = { audio, done -> sendAudio(audio, attempt, speechId, done) },
             completed = { ok ->
                 utterance = null
+                if (!closed && attempt == generation) GuideSession.show(GuideSession.state.copy(
+                    phase = if (ok) "播报完成，请按眼镜提示继续。" else "播报未完成，请重新开始。"))
                 if (!ok) {
                     // 合成失败或取消后，旧播放回执和超时不能影响下一轮任务。
                     plays.clear()
@@ -484,6 +504,7 @@ class CxrlAgentService : Service() {
                         "cloud_network" -> "语音服务连接失败，请检查手机网络再按键。"
                         else -> "语音播报失败，请稍后再按键。"
                     }
+                    GuideSession.show(GuideSession.state.copy(phase = message))
                     status(message)
                     if (device.ready) device.command("service.alert", message)
                 }
@@ -557,6 +578,7 @@ class CxrlAgentService : Service() {
             override fun onRouteReady(distanceM: Int, timeSec: Int) {
                 if (!current() || startingRoute != id) return
                 startingRoute = null
+                GuideSession.show(GuideSession.state.copy(phase = "步行路线已就绪，全程约 ${distanceM} 米。"))
                 reply(id, JSONObject().put("started", true).put("distanceM", distanceM).put("timeSec", timeSec))
             }
             override fun onRouteFailed(message: String) {
@@ -600,6 +622,7 @@ class CxrlAgentService : Service() {
     override fun onDestroy() {
         textTrace.enabled = false
         retire(); closed = true
+        GuideSession.show(GuideState())
         device.close(); navigation.close(); web?.close(); web = null
         worker.execute { speechCache.clear() }
         worker.shutdown()
