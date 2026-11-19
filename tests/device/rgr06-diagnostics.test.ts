@@ -19,7 +19,7 @@ test("CXR-L diagnostic handshake disables business commands and key handlers (so
 });
 
 test("CXR-L raw inputs preserve dispatch and never become phone business events (source contract)", () => {
-  const hook = cxrl.split("override fun dispatchKeyEvent(event: KeyEvent): Boolean {")[1]?.split("override fun onKeyDown")[0];
+  const hook = cxrl.split("override fun dispatchKeyEvent(event: KeyEvent): Boolean {")[1]?.split("if (!diagnosticOnly)")[0];
   assert.ok(hook);
   assert.match(hook, /event\("rgr06\.input", trace\)/);
   assert.match(hook, /return super\.dispatchKeyEvent\(event\)/);

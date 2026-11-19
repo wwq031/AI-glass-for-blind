@@ -69,6 +69,8 @@ let activePlanGeneration = 0;
 const lastSequence = new Map<string, number>();
 let nextLiveSession = 0;
 let nextModelPlanId = 0;
+let supportsSpeechStop = false;
+let voiceShortcut: { purpose: string; kind: "navigate_to" } | undefined;
 
 /** Raised when a native request is abandoned because the user cancelled or the glasses disconnected. */
 class OperationCancelled extends Error {
@@ -213,6 +215,7 @@ function invalidateOperation(): string | undefined {
   glasses.cancel();
   retireSession(sessionId);
   destinationCapture = undefined;
+  voiceShortcut = undefined;
   activePlan = undefined;
   activePlanGeneration = operationGeneration;
   // Everything the speech queue still holds for this session belongs to the conversation that just
@@ -225,6 +228,8 @@ function invalidateOperation(): string | undefined {
   voiceRetryCount = 0;
   captureRetryCount = 0;
   runningRoutes.clear();
+  routeIds.clear();
+  routeEpochs.clear();
   if (sessionId) {
     destinations.clearSession(sessionId);
     facts.clear(sessionId);
@@ -312,6 +317,8 @@ const deviceEvents = createDeviceEventMapper();
 
 /** Sessions with a route the device confirmed started. The device runs one route at a time. */
 const runningRoutes = new Set<string>();
+const routeIds = new Map<string, string>();
+const routeEpochs = new Map<string, number>();
 
 /**
  * The one capture the user authorised, and the capability their press authorised it for. A photo
@@ -346,6 +353,10 @@ const observation = new ObservationGateway(
 );
 
 const speech = new SpeechQueue({
+  canInterrupt: () => supportsSpeechStop,
+  interrupt: async effect => {
+    if (supportsSpeechStop) await requestNative("speech.stop", { speechId: effect.effect_id });
+  },
   speak: async (effect, local) => {
     // An utterance that was queued before the retirement and is only reached now belongs to a
     // conversation that is over; it never reaches the device. The one exception is the turn that
@@ -354,8 +365,10 @@ const speech = new SpeechQueue({
       return false;
     }
     const generation = operationGeneration;
+
     const spoken = await nativeStep<{ finished?: boolean }>(generation, "speech.say", {
       text: effect.text, priority: effect.priority, allowRepeat: true, local,
+      speechId: effect.effect_id,
     });
     return generation === operationGeneration && spoken?.finished === true;
   },
@@ -394,12 +407,19 @@ const toolRuntime: ToolRuntime = {
     return { mediaRef: capture.mediaRef, capturedAt: capture.capturedAt };
   },
   routeRunning: (sessionId) => runningRoutes.has(sessionId),
-  onRouteStarted: (sessionId, candidate) => {
+  onRouteStopped: sessionId => {
+    routeEpochs.set(sessionId, (routeEpochs.get(sessionId) ?? 0) + 1);
+    runningRoutes.delete(sessionId); routeIds.delete(sessionId); facts.clearNavigation(sessionId);
+  },
+  onRouteStarted: (sessionId, candidate, routeId) => {
+    routeEpochs.set(sessionId, (routeEpochs.get(sessionId) ?? 0) + 1);
+    facts.clearNavigation(sessionId);
+    if (routeId) routeIds.set(sessionId, routeId); else routeIds.delete(sessionId);
     runningRoutes.add(sessionId);
     queueNavigation({
       id: `navigation-start-${sessionId}-${candidate.candidate_id}`,
       type: "native.navigation",
-      payload: { sessionId, kind: "started" },
+      payload: { sessionId, kind: "started", routeId },
     });
   },
   openQuestionWindow: async (text, capabilityId, expiresAt) => {
@@ -422,7 +442,7 @@ const toolRuntime: ToolRuntime = {
     if (capabilityId) {
       // The prompt names the capability; the press that follows authorises that capture, and only it.
       const tag = glasses.armCapture(capabilityId);
-      const armed = await nativeStep(generation, "device.send", { type: "entrance.arm", payload: tag });
+      const armed = await nativeStep(generation, "device.send", { type: "entrance.arm", payload: tag, capabilityId });
       if (armed === undefined) {
         glasses.closeCapture();
         return { opened: false, window, reason: "the capture window did not open" };
@@ -499,8 +519,9 @@ function sessionState(sessionId: string): SessionState {
   const capability = glasses.armedCaptureCapability() ?? destinationCapture?.capabilityId ?? requested[0];
   const observing = capability ? CAPABILITY_STATE[capability] : undefined;
   if (observing) return observing;
-  if (runningRoutes.has(sessionId)) return "navigating";
   if (toolIds.includes("navigation.search_destination")) return "destination_input";
+  if (toolIds.includes("navigation.confirm_destination") && destinations.candidateCount(sessionId) > 0) return "destination_confirm";
+  if (runningRoutes.has(sessionId)) return "navigating";
   if (destinations.candidateCount(sessionId) > 0) return "destination_confirm";
   return "conversation_assist";
 }
@@ -544,6 +565,8 @@ function plannerPrompt(input: AgentTurnInput): string {
     "  · 导航提醒（开始、转弯、偏航、到达）已由策略确定性播报过，不要重复播报，也不要重复调用导航工具。",
     "  · 不要给出任何“可以安全通行”的结论。",
     "  · session.conversation 是本会话历史，接着上文回答，不要重新开始。",
+    "  · event.payload.shortcut=navigate_to 表示用户通过导航快捷键输入目的地，裸地点名也应搜索。",
+    "  · 地点候选已经按匹配程度和类别排序，保留顺序，播报名称、类别及距离；使用 speech.ask_user 等待明确确认。",
     "输入：" + JSON.stringify(input),
   ].join("\n");
 }
@@ -653,10 +676,15 @@ const agent: LlmAgent = {
     // Whatever this turn awaits, it must not act once the operation it belonged to is gone.
     const generation = operationGeneration;
 
-    // A navigation reminder is deterministic and must not wait on a model: the policy owns it.
-    if (input.event.source === "navigation" && input.event.sessionId === glasses.sessionId) {
-      const reminder = reminders.create(toNavigationEvent(input.event));
-      if (reminder) void speech.enqueue(reminder.text, reminder.priority, input.event.sessionId);
+    // The core still consumes telemetry sequences and invalidates crossing context, while
+    // progress and turn instructions reach the fact/reminder lanes without a model round.
+    if (input.event.source === "navigation" && input.event.type === "navigation.approaching_maneuver") {
+      return {
+        planId: `telemetry-${input.event.eventId}`, sessionId: input.event.sessionId,
+        eventId: input.event.eventId, goal: input.session.goal ?? "持续导航并等待用户输入",
+        actions: [{ kind: "wait", eventTypes: ["speech.input", "navigation.arrived"] }],
+        createdAt: new Date().toISOString(),
+      };
     }
 
     const metadata = {
@@ -757,7 +785,14 @@ async function acceptEvent(message: Envelope): Promise<void> {
       wireEvent = encodeAgentEvent(feedback[0]!);
       permissions = undefined;
     }
-    throw new Error("Agent feedback loop exceeded eight rounds");
+    // The final feedback still belongs to the core. Explicitly retire that continuation,
+    // preserving conversation history and a running route so the next user turn can recover.
+    if (activeEvent) host.abandonFeedback(activeEvent.sessionId);
+    const sessionId = activeEvent?.sessionId;
+    if (sessionId && !retiredSessions.has(sessionId)) {
+      await speech.enqueue("这一步暂时没有完成，请重新说出你的需求。", "high", sessionId, true);
+    }
+    send({ id: message.id, type: "event.result", payload: { rejection: { code: "turn_budget_exceeded" }, toolResults } });
   } finally {
     activeEvent = undefined;
   }
@@ -824,6 +859,7 @@ async function handleNativeDevice(message: Envelope): Promise<void> {
   if (!native) throw new Error("native device payload missing");
   // A reconnect is never a resume: the next conversation still starts from a fresh physical press.
   if (native.kind !== "event") return;
+  if (native.type === "shortcut.navigation") { await handlePress(message, true); return; }
 
   if (native.type === "entrance.confirm") {
     // The eye writes the tag it captured at the moment of the press, so a confirmation that was in
@@ -845,34 +881,31 @@ async function handleNativeDevice(message: Envelope): Promise<void> {
 }
 
 /** A physical press: it opens a recorder window, or starts the conversation if none is live. */
-async function handlePress(message: Envelope): Promise<void> {
+async function handlePress(message: Envelope, navigationShortcut = false): Promise<void> {
   // A press the user makes while a capture window is open authorises that capture on the glasses
   // itself; it must not also open a recorder.
   if (glasses.armedCaptureTag()) return;
   const generation = operationGeneration;
   if (!glasses.live) {
-    const sessionId = glasses.start(`live-${Date.now()}-${++nextLiveSession}`);
+    glasses.start(`live-${Date.now()}-${++nextLiveSession}`);
     voiceRetryCount = 0;
     captureRetryCount = 0;
-    try {
-      // The opening line is help, not a destination prompt: whatever the user says next decides
-      // which skill this conversation is about.
-      const finished = await speech.enqueue(
-        "我在。你可以说出想去的地方，也可以问我眼前的情况。", "normal", sessionId, true);
-      if (!finished || generation !== operationGeneration) return;
-      const purpose = glasses.armVoice();
-      await nativeStep(generation, "device.send", { type: "voice.arm", payload: purpose });
-      send({ id: message.id, type: "event.result", payload: { sessionId } });
-    } catch (error) {
-      if (isOperationCancelled(error) || generation !== operationGeneration) return;
-      glasses.cancel();
-      throw new Error(`cannot start the glasses conversation: ${String(error)}`);
-    }
-    return;
   }
-  // Already talking: a press just asks for the floor again.
   const purpose = glasses.armVoice();
-  await nativeStep(generation, "device.send", { type: "voice.arm", payload: purpose });
+  voiceShortcut = navigationShortcut ? { purpose, kind: "navigate_to" } : undefined;
+  try {
+    const armed = await nativeStep<{ directVoiceStart?: boolean; speechStop?: boolean }>(generation, "device.send", { type: "voice.arm", payload: purpose });
+    if (armed === undefined) return;
+    supportsSpeechStop = armed.speechStop === true;
+    // The shared bundle also runs on legacy RFCOMM hosts. Only upgraded native hosts
+    // advertise direct recording; an older eye keeps its physical confirmation window.
+    if (armed.directVoiceStart === true) await nativeStep(generation, "device.send", { type: "voice.start", payload: purpose });
+    send({ id: message.id, type: "event.result", payload: { sessionId: glasses.sessionId } });
+  } catch (error) {
+    if (isOperationCancelled(error) || generation !== operationGeneration) return;
+    glasses.closeVoice(); voiceShortcut = undefined;
+    throw error;
+  }
 }
 
 /**
@@ -902,6 +935,7 @@ async function handleAuthorityFailure(
     // accepted. Re-arming only reopens the window; the recorder still needs a new physical press.
     const retryPurpose = glasses.rearmVoice();
     if (!retryPurpose) return;
+    if (voiceShortcut) voiceShortcut = { ...voiceShortcut, purpose: retryPurpose };
     await nativeStep(generation, "device.send", { type: "voice.arm", payload: retryPurpose });
     return;
   }
@@ -919,7 +953,7 @@ async function handleAuthorityFailure(
   // A new tag retires the failed attempt: its photo and its consent can never be accepted.
   const retryTag = glasses.rearmCapture();
   if (!retryTag) return;
-  await nativeStep(generation, "device.send", { type: "entrance.arm", payload: retryTag });
+  await nativeStep(generation, "device.send", { type: "entrance.arm", payload: retryTag, capabilityId: glasses.armedCaptureCapability() });
 }
 
 /** The bound on automatic recovery: feedback once, then the conversation ends instead of retrying. */
@@ -954,15 +988,25 @@ async function handleNativeSpeech(message: Envelope): Promise<void> {
     // failure of the attempt just answered can never be counted against the reopened one.
     const retryPurpose = glasses.rearmVoice();
     if (!retryPurpose) return;
+    if (voiceShortcut) voiceShortcut = { ...voiceShortcut, purpose: retryPurpose };
     await nativeStep(generation, "device.send", { type: "voice.arm", payload: retryPurpose });
     return;
   }
   // Audio recorded under a retired purpose is not this conversation's; it is dropped here.
   if (!glasses.acceptSpeech(native.purpose)) return;
+  // Fixed stop commands are a local control channel, independent of model availability.
+  const control = native.transcript.trim().replace(/[，。！？,.!?\s]/g, "");
+  if (["取消", "取消任务", "停止导航", "结束任务"].includes(control)) {
+    handleUrgentDevice({ id: message.id, type: "native.device", payload: { kind: "event", type: "user.cancel" } });
+    return;
+  }
+  const shortcut = voiceShortcut?.purpose === native.purpose ? voiceShortcut.kind : undefined;
+  voiceShortcut = undefined;
   voiceRetryCount = 0;
   await acceptNativeEvent(message.id, sessionId, "speech", "speech.input", {
     // The user's own words, verbatim. Nothing in this pipeline classifies them.
     transcript: native.transcript.trim(), input_kind: "voice", purpose: native.purpose,
+    ...(shortcut ? { shortcut } : {}),
   });
 }
 
@@ -988,17 +1032,38 @@ async function handleNativePhoto(message: Envelope): Promise<void> {
 }
 
 function queueNavigation(message: Envelope): void {
+  const native = message.payload as NativeNavigationPayload;
+  // Policy reminders must reach the speech lane before any slow model turn in the queue.
+  if (!native || native.sessionId !== glasses.sessionId || !runningRoutes.has(native.sessionId) || retiredSessions.has(native.sessionId)) return;
+  if (routeIds.has(native.sessionId) && native.routeId !== routeIds.get(native.sessionId)) return;
+  const acceptedRouteEpoch = routeEpochs.get(native.sessionId);
+  const immediateEvent = nativeNavigationEvent(native, message.id, 0, new Date().toISOString());
+  const reminder = reminders.create(toNavigationEvent(immediateEvent));
+  if (reminder) void speech.enqueue(reminder.text, reminder.priority, native.sessionId, true);
+  // Route telemetry is evidence. Its queued core turn below still checks crossing state,
+  // but the planner consumes it locally instead of filling the queue with model requests.
+  if (native.kind === "progress" || native.kind === "navigation_text") {
+    const value = native.kind === "progress" ? native.remainDistanceM : native.detail;
+    facts.record(native.sessionId, {
+      name: native.kind === "progress" ? "navigation.remaining_distance_m" : "navigation.instruction",
+      value, confidence: "high", source: "navigation",
+      validUntil: new Date(Date.now() + 30_000).toISOString(),
+    });
+  }
   // Enqueue-fenced: a route callback buffered behind a slow turn is dropped whole if a cancel or a
   // disconnect lands while it waits, so a stale arrival can never open a session or speak against a
   // retired one.
   enqueue(async () => {
     const native = message.payload as NativeNavigationPayload;
+    if (!runningRoutes.has(native.sessionId) || routeEpochs.get(native.sessionId) !== acceptedRouteEpoch) return;
     if (!native || typeof native.sessionId !== "string" || typeof native.kind !== "string") {
       throw new Error("invalid native navigation callback");
     }
     const sequence = (lastSequence.get(native.sessionId) ?? 0) + 1;
     const event = nativeNavigationEvent(native, message.id, sequence, new Date().toISOString());
-    if (native.kind === "route_failed" || native.kind === "arrived") runningRoutes.delete(native.sessionId);
+    if (native.kind === "route_failed" || native.kind === "arrived") {
+      runningRoutes.delete(native.sessionId); routeIds.delete(native.sessionId); facts.clearNavigation(native.sessionId);
+    }
     await acceptEvent({ id: message.id, type: "event", payload: encodeAgentEvent(event) });
   }, message.id);
 }

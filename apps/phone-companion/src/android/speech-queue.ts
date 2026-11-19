@@ -4,6 +4,8 @@ import type { SpeechEffect } from "../../../../packages/domain/reminder/navigati
 export interface SpeechQueueOptions {
   /** Speaks one utterance on the device and resolves once playback finished. */
   speak(effect: SpeechEffect, local: boolean): Promise<boolean>;
+  interrupt?(effect: SpeechEffect): Promise<void>;
+  canInterrupt?(effect: SpeechEffect): boolean;
   now?: () => Date;
   ttlMs?: number;
   idFactory?: () => string;
@@ -33,6 +35,7 @@ export class SpeechQueue {
   private readonly policy = new SpeechPriorityPolicy();
   private readonly pending = new Map<string, Queued>();
   private draining = false;
+  private active?: { effect: SpeechEffect; stopping?: Promise<void> };
 
   private readonly options: SpeechQueueOptions;
 
@@ -57,6 +60,16 @@ export class SpeechQueue {
     return new Promise<boolean>((resolve) => {
       this.pending.set(effect.effect_id, { ...effect, local, settle: resolve });
       this.policy.enqueue(effect);
+      const current = this.active;
+      const ranks = { critical: 4, high: 3, normal: 2, detail: 1 };
+      if (current && !current.stopping && current.effect.interruptible &&
+          ranks[priority] > ranks[current.effect.priority] && this.options.interrupt &&
+          (this.options.canInterrupt?.(current.effect) ?? true)) {
+        current.stopping = this.options.interrupt(current.effect);
+        // The native stop also settles the old speak promise. Never drain the next
+        // utterance before its stop acknowledgement has completed.
+        void current.stopping.catch(() => {});
+      }
       void this.drain();
     });
   }
@@ -129,11 +142,17 @@ export class SpeechQueue {
         // waited. It is consumed and dropped, never spoken and never replayed.
         if (!queued) continue;
         let finished = false;
+        const active = { effect: next, stopping: undefined as Promise<void> | undefined };
+        this.active = active;
         try {
           finished = await this.options.speak(next, queued.local);
+          if (active.stopping) await active.stopping;
         } catch {
+          if (active.stopping) await active.stopping.catch(() => {});
           finished = false;
         }
+        if (active.stopping) finished = false;
+        if (this.active === active) this.active = undefined;
         queued.settle(finished);
       }
     } finally {

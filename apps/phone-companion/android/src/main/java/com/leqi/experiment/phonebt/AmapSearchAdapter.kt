@@ -36,6 +36,8 @@ object AmapSearchAdapter {
         @JvmField val latitude: Double,
         @JvmField val longitude: Double,
         @JvmField val distanceM: Int,
+        @JvmField val category: String = "",
+        @JvmField val categoryCode: String = "",
     ) {
 
         /** 播报用：名称 + 距离；高德没给距离时不编一个。 */
@@ -59,11 +61,11 @@ object AmapSearchAdapter {
         query.setPageSize(20)
         query.setPageNum(1)
         query.setCityLimit(false)
-        query.setDistanceSort(true)
+        query.setDistanceSort(false)
         query.setLocation(LatLonPoint(latitude, longitude))
         val poiSearch = PoiSearch(context, query)
         poiSearch.setBound(
-            PoiSearch.SearchBound(LatLonPoint(latitude, longitude), SEARCH_RADIUS_M, true),
+            PoiSearch.SearchBound(LatLonPoint(latitude, longitude), SEARCH_RADIUS_M, false),
         )
         val result = poiSearch.searchPOI()
         val candidates = ArrayList<Candidate>()
@@ -84,11 +86,14 @@ object AmapSearchAdapter {
                     point.getLatitude(),
                     point.getLongitude(),
                     item.getDistance(),
+                    item.getTypeDes() ?: "",
+                    item.getTypeCode() ?: "",
                 ),
             )
-            if (candidates.size >= MAX_CANDIDATES) break
         }
-        return candidates
+        val unique = candidates.distinctBy { it.poiId?.takeIf(String::isNotBlank) ?: "${it.name}:${it.latitude}:${it.longitude}" }
+        return DestinationRanking.order(keyword, unique.map { DestinationRanking.Place(it.name, "${it.category} ${it.categoryCode}", it.distanceM) })
+            .take(MAX_CANDIDATES).map(unique::get)
     }
 
     /** 高德在无坐标时会给出 (0,0) 或越界值，这类结果不能拿去算路线。 */

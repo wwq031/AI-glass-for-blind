@@ -9,6 +9,7 @@ import android.widget.TextView
 import android.util.Base64
 import android.util.Log
 import com.leqi.experiment.CxrlInputGate
+import com.leqi.experiment.ShortcutInput
 import com.rokid.cxr.CXRServiceBridge
 import com.rokid.cxr.Caps
 import org.json.JSONObject
@@ -28,11 +29,13 @@ class GlassesActivity : Activity() {
     private var recording = false
     private var playback: ByteArrayOutputStream? = null
     private var header: JSONObject? = null
+    private var playingSpeechKey: String? = null
     @Volatile private var track: AudioTrack? = null
     private val playbackLock = Any()
     private var playing = false
     private var lastClick = -1000L
     private var diagnosticOnly = false
+    private var physicalShortcut = false
     private fun audioDiagnostic(stage: String, detail: String) {
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0)
             Log.d("LeqiAudioDiag", "$stage $detail")
@@ -44,8 +47,8 @@ class GlassesActivity : Activity() {
                 return
             }
             when (intent.action) {
-                "com.android.action.ACTION_SPRITE_BUTTON_CLICK" -> click()
-                "com.android.action.ACTION_SPRITE_BUTTON_LONG_PRESS" -> cancelFromUser()
+                "com.android.action.ACTION_SPRITE_BUTTON_CLICK" -> if (physicalShortcut) click()
+                // This gesture is owned by the OEM assistant on the measured ring. Never map it to cancel.
             }
         }
     }
@@ -74,7 +77,7 @@ class GlassesActivity : Activity() {
         val payload = packet.optString("payload")
         if (type == "link.bind") {
             diagnosticOnly = false
-            reset(); link = payload; sequence = 0
+            reset(); physicalShortcut = false; link = payload; sequence = 0
             event("link.ready"); text.text = "已连接，等待手机模型就绪"; return
         }
         if (link.isBlank() || packet.optString("link") != link) return
@@ -87,6 +90,7 @@ class GlassesActivity : Activity() {
         }
         if (diagnosticOnly) return
         when (type) {
+            "input.configure" -> { physicalShortcut = payload == "true" }
             "voice.arm", "voice.disarm", "entrance.arm", "entrance.disarm" -> {
                 gate.arm(type, payload, SystemClock.elapsedRealtime())
                 if (type == "voice.arm" || type == "entrance.arm") {
@@ -98,7 +102,19 @@ class GlassesActivity : Activity() {
                     text.text = if (type.startsWith("voice")) "按键开始说话" else "按键确认本次拍照"
             }
             "task.cancel" -> { reset(); text.text = "任务已取消，短按可重新开始" }
-            "voice.started" -> { recording = true; text.text = "正在听，请说话；短按结束" }
+            "play.stop" -> {
+                val stop = JSONObject(payload)
+                if (playingSpeechKey == stop.optString("speechKey")) stopPlayback()
+                event("play.stopped", stop.getString("requestId"))
+            }
+            "voice.started" -> {
+                gate.cancel(); recording = true; text.text = "正在听，请说话；短按结束"
+                runCatching {
+                    val tone = ToneGenerator(AudioManager.STREAM_MUSIC, 60)
+                    tone.startTone(ToneGenerator.TONE_PROP_BEEP, 80)
+                    main.postDelayed({ tone.release() }, 150)
+                }
+            }
             "voice.stopped" -> { recording = false; text.text = "正在处理，请稍候" }
             "status" -> text.text = payload
             "play.start" -> {
@@ -107,7 +123,7 @@ class GlassesActivity : Activity() {
                 require(value.getInt("bytes") in 2..8640000 && value.getInt("bytes") % 2 == 0)
                 require(value.getInt("rate") in 8000..48000)
                 audioDiagnostic("rx.start", "playId=${value.getString("id")} bytes=${value.getInt("bytes")} rate=${value.getInt("rate")}")
-                header = value; playback = ByteArrayOutputStream()
+                header = value; playingSpeechKey = value.optString("speechKey", value.getString("id")); playback = ByteArrayOutputStream()
             }
             "play.chunk" -> {
                 val bytes = Base64.decode(payload, Base64.NO_WRAP)
@@ -158,7 +174,7 @@ class GlassesActivity : Activity() {
                 synchronized(playbackLock) { check(attempt == generation); track = created }
                 check(created.write(pcm, 0, pcm.size) == pcm.size)
                 check(created.state == AudioTrack.STATE_INITIALIZED && attempt == generation)
-                created.play()
+                synchronized(playbackLock) { check(attempt == generation); created.play() }
                 audioDiagnostic("play.start", "playId=$id rate=$rate frames=${pcm.size / 2}")
                 val deadline = SystemClock.elapsedRealtime() + pcm.size * 1000L / (rate * 2) + 3000
                 while (attempt == generation && created.playbackHeadPosition < pcm.size / 2 && SystemClock.elapsedRealtime() < deadline)
@@ -174,7 +190,11 @@ class GlassesActivity : Activity() {
         }
     }
     private fun reset() {
-        gate.cancel(); recording = false; playback = null; header = null; playing = false
+        gate.cancel(); recording = false
+        stopPlayback()
+    }
+    private fun stopPlayback() {
+        playback = null; header = null; playing = false; playingSpeechKey = null
         synchronized(playbackLock) { generation++; runCatching { track?.pause() }; track = null }
     }
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
@@ -188,6 +208,25 @@ class GlassesActivity : Activity() {
             Log.d("Rgr06Input", trace)
             event("rgr06.input", trace)
         }
+        if (diagnosticOnly) return super.dispatchKeyEvent(event)
+        if (!diagnosticOnly) {
+            val action = ShortcutInput.action(name, event.keyCode)
+            if (action != null) {
+                if (event.action == KeyEvent.ACTION_UP && event.repeatCount == 0 && !event.isCanceled) {
+                    when (action) {
+                        "voice" -> click()
+                        "navigate" -> {
+                            if (recording) click()
+                            else if (link.isNotBlank() && SystemClock.elapsedRealtime() - lastClick >= 300) {
+                                lastClick = SystemClock.elapsedRealtime()
+                                event("shortcut.navigation")
+                            }
+                        }
+                    }
+                }
+                return true
+            }
+        }
         return super.dispatchKeyEvent(event)
     }
     override fun onKeyDown(code: Int, event: KeyEvent): Boolean {
@@ -199,13 +238,13 @@ class GlassesActivity : Activity() {
     }
     override fun onKeyLongPress(code: Int, event: KeyEvent): Boolean {
         if (diagnosticOnly) return super.onKeyLongPress(code, event)
-        if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) { cancelFromUser(); return true }
+        if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) { return true }
         return super.onKeyLongPress(code, event)
     }
     override fun onKeyUp(code: Int, event: KeyEvent): Boolean {
         if (diagnosticOnly) return super.onKeyUp(code, event)
         if (code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER) {
-            if (!event.isCanceled) click(); return true
+            if (!event.isCanceled && !event.isLongPress) click(); return true
         }
         return super.onKeyUp(code, event)
     }

@@ -256,7 +256,7 @@ interface Harness {
   say(id: string, transcript: string): Promise<void>;
 }
 
-async function createHarness(): Promise<Harness> {
+async function createHarness(planner: (prompt: string) => string = mockModel, directVoiceStart = true): Promise<Harness> {
   const source = await loadBundle();
   const sent: NativeEnvelope[] = [];
   const answered = new Set<string>();
@@ -312,9 +312,9 @@ async function createHarness(): Promise<Harness> {
       case "device.send":
         // `task.cancel` is the one device.send the phone must retire native work for; the bridge
         // models that acknowledgement explicitly.
-        return message.payload?.type === "task.cancel" ? { sent: true, cancelled: true } : { sent: true };
+        return message.payload?.type === "task.cancel" ? { sent: true, cancelled: true } : { sent: true, directVoiceStart, speechStop: directVoiceStart };
       case "model.generate":
-        return mockModel(String(message.payload?.prompt ?? ""));
+        return planner(String(message.payload?.prompt ?? ""));
       case "policy.navigation.start":
         return { started: true, distanceM: 320, timeSec: 260 };
       case "policy.navigation.stop":
@@ -358,12 +358,18 @@ async function createHarness(): Promise<Harness> {
       case "event.result": eventResults.push(message); return;
       case "error": errors.push(message); return;
       case "speech.say": speechSays.push(message); payload = { finished: true }; break;
-      case "device.send": deviceSends.push(message); payload = { sent: true }; break;
-      case "model.generate": modelPrompts.push(message); payload = mockModel(String(message.payload?.prompt ?? "")); break;
+      case "speech.stop": {
+        const stopped = (heldRequests.get("speech.say") ?? []).filter(m => m.payload?.speechId === message.payload?.speechId);
+        heldRequests.set("speech.say", (heldRequests.get("speech.say") ?? []).filter(m => !stopped.includes(m)));
+        for (const old of stopped) reply(old.id, undefined, "speech_interrupted");
+        payload = { stopped: true }; break;
+      }
+      case "device.send": deviceSends.push(message); payload = { sent: true, directVoiceStart, speechStop: directVoiceStart }; break;
+      case "model.generate": modelPrompts.push(message); payload = planner(String(message.payload?.prompt ?? "")); break;
       case "policy.navigation.start":
         navigationStarts.push(message);
         liveSessionId = message.payload?.sessionId;
-        payload = { started: true, distanceM: 320, timeSec: 260 };
+        payload = { started: true, distanceM: 320, timeSec: 260, routeId: message.payload?.routeId };
         break;
       case "policy.navigation.stop": payload = { stopped: true }; break;
       case "vision.observe":
@@ -436,6 +442,9 @@ async function createHarness(): Promise<Harness> {
         const purpose = (payload as { purpose?: unknown }).purpose;
         if (typeof purpose === "string") consumedPurposes.add(purpose);
       }
+      if (type === "native.navigation" && payload && typeof payload === "object" && !("routeId" in payload)) {
+        payload = { ...payload, routeId: navigationStarts.at(-1)?.payload.routeId };
+      }
       deliver(JSON.stringify({ id, type, payload }));
     },
     settle,
@@ -487,7 +496,102 @@ async function createHarness(): Promise<Harness> {
   return harness;
 }
 
-/** Press the start button: the conversation opens with a help prompt and a recorder window. */
+test("navigation quality: changing destination searches while the old route remains active", async () => {
+  const h = await createHarness(prompt => {
+    const input = turnInput(prompt);
+    return input.event.payload.transcript === "改去医院"
+      ? plan([tool("navigate_to", "navigation.search_destination", { query: "医院" })]) : mockModel(prompt);
+  });
+  try {
+    await h.say("go", "带我去人民公园"); await h.say("choose", "第一个");
+    assert.equal(h.navigationStarts.length, 1);
+    const before = h.toolCalls.length;
+    await h.say("switch", "改去医院");
+    assert.equal(h.toolCalls.length, before + 1);
+    assert.equal(h.sent.filter(m => m.type === "policy.navigation.stop").length, 0);
+    assert.match(h.speechTexts().at(-1)!, /找到2个地点/);
+    await h.say("new-choice", "第一个");
+    assert.equal(h.navigationStarts.length, 2);
+    assert.equal(h.sent.filter(m => m.type === "policy.navigation.stop").length, 1);
+  } finally { h.finish(); }
+});
+
+test("navigation quality: feedback budget exhaustion releases the next user turn", async () => {
+  let looping = true;
+  const h = await createHarness(() => looping
+    ? plan([tool("follow_up", "facts.query", { names: ["entrance.*"], limit: 5 })]) : plan([speak("你好")]));
+  try {
+    await h.say("loop", "查一下"); looping = false;
+    const before = h.modelPrompts.length;
+    await h.say("next", "你好");
+    assert.equal(h.modelPrompts.length, before + 1);
+    assert.equal(h.speechTexts().at(-1), "你好");
+  } finally { h.finish(); }
+});
+
+test("navigation quality: a turn reminder bypasses a slow model turn", async () => {
+  const h = await createHarness();
+  try {
+    await h.say("go", "带我去人民公园"); await h.say("choose", "第一个");
+    h.hold("model.generate", 1); await h.say("slow", "你好");
+    h.deliver("turn", "native.navigation", { sessionId: h.liveSessionId(), kind: "navigation_text", detail: "前方十米右转" });
+    await h.settle();
+    assert.ok(h.speechTexts().includes("前方十米右转"));
+    h.answer("model.generate", plan([speak("你好")])); await h.settle();
+    assert.equal(h.speechTexts().filter(text => text === "前方十米右转").length, 1);
+  } finally { h.finish(); }
+});
+
+test("navigation quality: first press starts recording and middle-click marks destination input", async () => {
+  const h = await createHarness(prompt => plan([speak(turnInput(prompt).event.payload.shortcut === "navigate_to" ? "目的地输入" : "普通输入")]));
+  try {
+    h.deliver("shortcut", "native.device", { kind: "event", type: "shortcut.navigation" }); await h.settle();
+    assert.ok(h.deviceSends.some(m => m.payload.type === "voice.start"));
+    assert.equal(h.speechSays.length, 0);
+    await h.say("target", "新街口");
+    assert.equal(h.speechTexts().at(-1), "目的地输入");
+  } finally { h.finish(); }
+});
+
+test("navigation quality: explicit voice cancel stops navigation without a model round", async () => {
+  const h = await createHarness();
+  try {
+    await h.say("go", "带我去人民公园"); await h.say("choose", "第一个");
+    const before = h.modelPrompts.length;
+    await h.say("stop", "取消");
+    assert.equal(h.modelPrompts.length, before);
+    assert.ok(h.sent.some(m => m.type === "policy.navigation.stop"));
+    assert.equal(h.speechTexts().at(-1), CANCELLED_SPEECH);
+  } finally { h.finish(); }
+});
+
+test("navigation quality: routine progress updates facts without filling the model queue", async () => {
+  const h = await createHarness();
+  try {
+    await h.say("go", "带我去人民公园"); await h.say("choose", "第一个");
+    const before = h.modelPrompts.length;
+    for (let i = 0; i < 3; i++) h.deliver(`progress-${i}`, "native.navigation", {
+      sessionId: h.liveSessionId(), kind: "progress", remainDistanceM: 300 - i * 10,
+    });
+    await h.settle();
+    assert.equal(h.modelPrompts.length, before);
+    await h.say("remaining", "还有多远");
+    assert.match(h.speechTexts().at(-1)!, /280/);
+  } finally { h.finish(); }
+});
+
+test("navigation quality: a legacy host retains its press-to-record window", async () => {
+  const h = await createHarness(mockModel, false);
+  try {
+    await startConversation(h);
+    assert.equal(h.voiceArms().length, 1);
+    assert.ok(!h.deviceSends.some(m => m.payload.type === "voice.start"));
+    await h.say("legacy-speech", "你好");
+    assert.equal(h.modelPrompts.length, 1);
+  } finally { h.finish(); }
+});
+
+/** Press the start button: the conversation opens a recorder window. */
 async function startConversation(harness: Harness): Promise<void> {
   harness.deliver("button-0", "native.device",
     { kind: "event", type: "probe.glasses", payload: "sprite-button-click" });
@@ -545,12 +649,12 @@ test("golden loop: a spoken destination, a spoken choice and a spoken request to
   t.after(() => harness.finish());
   const { errors, speechSays, modelPrompts, toolCalls, navigationStarts, visionRequests, effects } = harness;
 
-  // Stage 1 — the start press opens the conversation with help, not with a destination demand.
+  // Stage 1 — the initiating press opens recording without a second press or a long introduction.
   await startConversation(harness);
-  assert.deepEqual(harness.speechTexts(), [HELP_SPEECH],
-    "stage 1: the start press must open with a generic help prompt");
+  assert.deepEqual(harness.speechTexts(), []);
+  assert.equal(harness.deviceSends.filter(m => m.payload.type === "voice.start").length, 1);
   const firstPurpose = harness.voiceArms()[0];
-  assert.match(String(firstPurpose), /^voice:\d+$/, "stage 1: a recorder window must be armed after playback");
+  assert.match(String(firstPurpose), /^voice:\d+$/, "stage 1: a recorder window must be armed for the initiating press");
   assert.equal(harness.captureArms().length, 0, "stage 1: the camera must not be opened by a press");
 
   // Stage 2 — the destination utterance reaches the model, which searches through the registry.
@@ -585,8 +689,8 @@ test("golden loop: a spoken destination, a spoken choice and a spoken request to
     "stage 2: the provider call must carry the live session id");
 
   // The candidates are read back to the user through the registry's ask_user, which reopens voice.
-  assert.equal(speechSays.length, 2, "stage 2: the candidates must be offered once");
-  const offer = String(speechSays[1]!.payload.text);
+  assert.equal(speechSays.length, 1, "stage 2: the candidates must be offered once");
+  const offer = String(speechSays[0]!.payload.text);
   assert.match(offer, /找到2个地点/);
   assert.match(offer, /第1个，人民公园/);
   assert.match(offer, /第2个，人民公园地铁站/);
@@ -926,8 +1030,8 @@ test("a disconnect while a prompt is playing never arms the camera or accepts a 
 
   harness.deliver("button-9", "native.device", { kind: "event", type: "probe.glasses", payload: "sprite-button-click" });
   await harness.settle();
-  assert.equal(harness.speechTexts().at(-1), HELP_SPEECH,
-    "a new physical press must start a new conversation, not resume the disconnected one");
+  assert.equal(harness.deviceSends.at(-1)?.payload.type, "voice.start",
+    "a new physical press must start recording, not resume the disconnected conversation");
   assert.deepEqual(errors, [], "a clean disconnect must not be reported as a device error");
   assertBridgeSettled(harness);
 });
@@ -944,7 +1048,7 @@ test("an expired voice window retries with bounded feedback and drops stale tags
   harness.deliver("voice-expired-stale", "native.device",
     { kind: "event", type: "voice.expired", payload: "voice:99" });
   await harness.settle();
-  assert.equal(harness.speechSays.length, 1, "a stale expiry must not produce a retry prompt");
+  assert.equal(harness.speechSays.length, 0, "a stale expiry must not produce a retry prompt");
   assert.equal(harness.voiceArms().length, 1, "a stale expiry must not reopen a recorder window");
 
   // The live window expires: one bounded retry under a fresh purpose, then the user must press again.
@@ -1118,8 +1222,8 @@ test("repeated authority failures end the conversation instead of retrying forev
   // The conversation is over: a new physical press starts a fresh one rather than resuming this one.
   harness.deliver("button-2", "native.device", { kind: "event", type: "probe.glasses", payload: "sprite-button-click" });
   await harness.settle();
-  assert.equal(harness.speechTexts().at(-1), HELP_SPEECH,
-    "a new press must start a new conversation after the previous one ended");
+  assert.equal(harness.deviceSends.at(-1)?.payload.type, "voice.start",
+    "a new press must start recording after the previous conversation ended");
   assert.match(String(harness.voiceArms().at(-1)), /^voice:\d+$/, "the new conversation arms its own window");
 
   assertBridgeSettled(harness);
@@ -1192,7 +1296,7 @@ test("an arrival buffered behind a held prompt is dropped once the user cancels"
   // Only a brand-new physical press may start the next conversation.
   harness.deliver("button-2", "native.device", { kind: "event", type: "probe.glasses", payload: "sprite-button-click" });
   await harness.settle();
-  assert.equal(harness.speechTexts().at(-1), HELP_SPEECH, "a new press must start a fresh conversation");
+  assert.equal(harness.deviceSends.at(-1)?.payload.type, "voice.start", "a new press starts fresh recording");
   assertBridgeSettled(harness);
 });
 
@@ -1233,7 +1337,76 @@ test("a press buffered behind a held model turn is dropped after a cancel and ca
   // A press after the cancel is a new user operation and does start the next conversation.
   harness.deliver("button-3", "native.device", { kind: "event", type: "probe.glasses", payload: "sprite-button-click" });
   await harness.settle();
-  assert.equal(harness.speechTexts().at(-1), HELP_SPEECH,
-    "a press after the cancel must start a fresh conversation");
+  assert.equal(harness.deviceSends.at(-1)?.payload.type, "voice.start",
+    "a press after the cancel starts fresh recording");
   assertBridgeSettled(harness);
+});
+
+
+test('navigation follow-up: turn alert preempts ordinary playback', async () => {
+  const h = await createHarness();
+  try {
+    await h.say('go', '带我去人民公园'); await h.say('choose', '第一个');
+    h.hold('speech.say', 1); await h.say('chat', '你好');
+    assert.equal(h.heldCount('speech.say'), 1);
+    h.deliver('turn', 'native.navigation', {sessionId:h.liveSessionId(),kind:'navigation_text',detail:'前方十米右转'});
+    await h.settle();
+    assert.ok(h.speechTexts().includes('前方十米右转'));
+    h.answer('speech.say', {finished:true}); await h.settle();
+    assert.ok(h.speechTexts().includes('前方十米右转'));
+  } finally { h.finish(); }
+});
+
+test('navigation follow-up: new route rejects old navigation facts', async () => {
+  const h = await createHarness(prompt => turnInput(prompt).event.payload.transcript === '改去医院'
+    ? plan([tool('navigate_to','navigation.search_destination',{query:'医院'})]) : mockModel(prompt));
+  try {
+    await h.say('go', '带我去人民公园'); await h.say('choose', '第一个');
+    h.deliver('old-progress','native.navigation',{sessionId:h.liveSessionId(),kind:'progress',remainDistanceM:420});
+    await h.settle();
+    const oldRouteId = h.navigationStarts.at(-1)!.payload.routeId;
+    await h.say('switch','改去医院'); await h.say('new-choice','第一个');
+    assert.equal(h.navigationStarts.length,2);
+    h.deliver('late-old-route','native.navigation',{sessionId:h.liveSessionId(),routeId:oldRouteId,kind:'progress',remainDistanceM:420});
+    await h.settle();
+    await h.say('remaining','还有多远');
+    assert.doesNotMatch(h.speechTexts().at(-1), /420/);
+    h.deliver('new-progress','native.navigation',{sessionId:h.liveSessionId(),kind:'progress',remainDistanceM:280});
+    await h.settle(); await h.say('new-remaining','还有多远');
+    assert.match(h.speechTexts().at(-1)!, /280/);
+  } finally { h.finish(); }
+});
+
+
+test('navigation follow-up: a route start taking 3.1 seconds still succeeds', async () => {
+  const h = await createHarness();
+  try {
+    await h.say('go', '带我去人民公园');
+    h.hold('policy.navigation.start', 1); await h.say('choose', '第一个');
+    assert.equal(h.heldCount('policy.navigation.start'),1);
+    await new Promise(resolve => setTimeout(resolve, 3100)); await h.settle();
+    h.answer('policy.navigation.start',{started:true,distanceM:320,timeSec:260}); await h.settle();
+    const result = h.eventResults.find(m => m.id === 'choose');
+    assert.ok(result.payload.toolResults.some(r => r.toolId === 'navigation.confirm_destination' && r.status === 'succeeded'));
+    assert.ok(!h.sent.some(m => m.type === 'policy.navigation.stop'));
+  } finally { h.finish(); }
+});
+
+test("navigation follow-up: an old arrival queued before replacement cannot retire the new route", async () => {
+  const h = await createHarness(prompt => turnInput(prompt).event.payload.transcript === "改去医院"
+    ? plan([tool("navigate_to", "navigation.search_destination", { query: "医院" })]) : mockModel(prompt));
+  try {
+    await h.say("go", "带我去人民公园"); await h.say("choose", "第一个");
+    const oldRouteId = h.navigationStarts.at(-1)!.payload.routeId;
+    await h.say("switch", "改去医院");
+    h.hold("model.generate", 1); await h.say("new-choice", "第一个");
+    h.deliver("old-arrival", "native.navigation", { sessionId: h.liveSessionId(), routeId: oldRouteId, kind: "arrived" });
+    await h.settle();
+    h.answer("model.generate", plan([tool("navigate_to", "navigation.confirm_destination", { candidate_index: 0 })]));
+    await h.settle();
+    assert.equal(h.navigationStarts.length, 2);
+    h.deliver("new-progress", "native.navigation", { sessionId: h.liveSessionId(), kind: "progress", remainDistanceM: 280 });
+    await h.settle(); await h.say("remaining", "还有多远");
+    assert.match(h.speechTexts().at(-1)!, /280/);
+  } finally { h.finish(); }
 });

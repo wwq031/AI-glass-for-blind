@@ -160,11 +160,15 @@ tasks.named('preBuild').configure { dependsOn 'bundleAgent' }
 def sharedSources = layout.buildDirectory.dir('generated/sharedSources')
 android.sourceSets.main.java.srcDir(sharedSources)
 tasks.register('syncAgentPorts', Sync) {
-    from('../common/src/main/java') { include 'com/leqi/experiment/CxrlInputGate.kt' }
+    from('../common/src/main/java') {
+        include 'com/leqi/experiment/CxrlInputGate.kt'
+        include 'com/leqi/experiment/ShortcutInput.kt'
+    }
     from('../../../phone-companion/android/src/main/java') {
         include 'com/leqi/experiment/phonebt/AgentRuntimeWebView.kt'
         include 'com/leqi/experiment/phonebt/AgentNavigationDevice.kt'
         include 'com/leqi/experiment/phonebt/Amap*.kt'
+        include 'com/leqi/experiment/phonebt/DestinationRanking.kt'
         include 'com/leqi/experiment/phonebt/PhoneLocationAdapter.kt'
     }
     into sharedSources

@@ -46,4 +46,6 @@ export class PhoneAgentRuntime {
     }
     return output;
   }
+
+  abandonFeedback(sessionId: string): void { this.core.abandonFeedback(sessionId); }
 }

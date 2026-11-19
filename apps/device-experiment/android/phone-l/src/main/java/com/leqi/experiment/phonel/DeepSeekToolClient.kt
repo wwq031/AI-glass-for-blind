@@ -16,7 +16,7 @@ internal class DeepSeekToolClient(
         URL("https://api.deepseek.com/v1/tools/$it").openConnection() as HttpURLConnection
     },
 ) {
-    private val active = mutableSetOf<HttpURLConnection>()
+    private val active = mutableMapOf<HttpURLConnection, String>()
 
     fun transcribe(pcm: ByteArray, cancelled: () -> Boolean): JSONObject =
         json(multipart("asr", "speech.wav", "audio/wav", pcmWave(pcm), null, cancelled))
@@ -32,7 +32,8 @@ internal class DeepSeekToolClient(
         return SpeechAudio(FloatArray(samples.remaining()) { samples.get() / 32768f }, 24000)
     }
 
-    fun cancel() = synchronized(active) { active.forEach { it.disconnect() } }
+    fun cancel() = synchronized(active) { active.keys.forEach { it.disconnect() } }
+    fun cancelSpeech() = synchronized(active) { active.filterValues { it == "tts" }.keys.forEach { it.disconnect() } }
 
     private fun multipart(tool: String, name: String, type: String, bytes: ByteArray,
         purpose: String?, cancelled: () -> Boolean): ByteArray {
@@ -52,7 +53,7 @@ internal class DeepSeekToolClient(
         cancelled: () -> Boolean): ByteArray {
         val connection = synchronized(active) {
             if (cancelled()) throw ModelServiceException("cloud_cancelled")
-            connect(tool).also { active.add(it) }
+            connect(tool).also { active[it] = tool }
         }
         try {
             connection.requestMethod = "POST"

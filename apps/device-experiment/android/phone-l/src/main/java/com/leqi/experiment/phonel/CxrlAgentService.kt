@@ -5,8 +5,6 @@ import android.content.pm.PackageManager
 import android.location.LocationManager
 import android.app.*
 import android.content.Intent
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.*
 import android.util.Base64
 import android.util.Log
@@ -25,8 +23,10 @@ import java.util.concurrent.Executors
 open class CxrlAgentService : Service() {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newSingleThreadExecutor()
+    private val speechWorker = Executors.newSingleThreadExecutor()
     @Volatile private var closed = false
     @Volatile private var generation = 0L
+    @Volatile private var speechEpoch = 0L
     private var web: AgentRuntimeWebView? = null
     private lateinit var device: CxrlAgentDevice
     private lateinit var navigation: AgentNavigationDevice
@@ -34,6 +34,9 @@ open class CxrlAgentService : Service() {
     private var cloud: DeepSeekClient? = null
     private var cloudTools: DeepSeekToolClient? = null
     private var utterance: CxrlSpeechPlayback? = null
+    private var utteranceKey: String? = null
+    private var interruptingSpeech = false
+    private var speechStopReply: String? = null
     private var speech: SpeechEngines? = null
     private val speechCache = SpeechAudioCache()
     @Volatile private var modelsReady = false
@@ -42,6 +45,7 @@ open class CxrlAgentService : Service() {
     private val plays = LinkedHashMap<String, Pair<Long, (Boolean) -> Unit>>()
     private var voiceTag: String? = null
     private var photoTag: String? = null
+    private var photoCapability = "vision.scene"
     private var microphone: IAudioCallback? = null
     private var microphoneSession: CxrSession? = null
     private var pcm: ByteArrayOutputStream? = null
@@ -49,6 +53,7 @@ open class CxrlAgentService : Service() {
     private var photoCallback: IImageCallback? = null
     private var photoSession: CxrSession? = null
     private var route: String? = null
+    private var activeRouteId: String? = null
     private var startingRoute: String? = null
     private val textTrace by lazy {
         SpeechTextDiagnostics(applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
@@ -210,7 +215,12 @@ open class CxrlAgentService : Service() {
         if (::device.isInitialized) runCatching { device.close() }
         if (::navigation.isInitialized) runCatching { navigation.close() }
         runCatching { web?.close() }; web = null
-        worker.execute { speechCache.clear(); runCatching { speech?.close() }; speech = null; runCatching { model?.close() }; model = null }
+        worker.execute {
+            runCatching { model?.close() }; model = null
+            // ASR and TTS use separate engines. Wait for both lanes before releasing either.
+            speechWorker.execute { speechCache.clear(); runCatching { speech?.close() }; speech = null }
+            speechWorker.shutdown()
+        }
         worker.shutdown()
     }
 
@@ -277,7 +287,26 @@ open class CxrlAgentService : Service() {
                         }
                     }
                 }
+                "speech.stop" -> {
+                    if (payload.optString("speechId") != utteranceKey || utterance == null) {
+                        reply(id, JSONObject().put("stopped", true))
+                    } else {
+                        speechStopReply = id
+                        val stoppedKey = utteranceKey
+                        speechEpoch++
+                        interruptingSpeech = true
+                        utterance?.cancel()
+                        interruptingSpeech = false
+                        cloudTools?.cancelSpeech()
+                        device.command("play.stop", JSONObject().put("requestId", id).put("speechKey", stoppedKey).toString()) {
+                            if (it.isFailure) device.fail("停止播报失败")
+                        }
+                        val stopGeneration = generation
+                        main.postDelayed({ if (!closed && generation == stopGeneration && speechStopReply == id) device.fail("停止播报回执超时") }, 3000)
+                    }
+                }
                 "speech.say" -> say(payload.getString("text"),
+                    payload.optString("speechId", id),
                     payload.optBoolean("local") || payload.optString("priority") in setOf("high", "critical")) { ok ->
                     if (ok) reply(id, JSONObject().put("finished", true)) else reply(id, error = "眼镜播报未完成")
                 }
@@ -307,7 +336,17 @@ open class CxrlAgentService : Service() {
         when (type) {
             "task.cancel" -> retire()
             "voice.arm" -> { check(microphone == null && photoCallback == null); voiceTag = tag; photoTag = null }
-            "entrance.arm" -> { check(microphone == null && photoCallback == null); photoTag = tag; voiceTag = null }
+            "voice.start" -> {
+                check(modelsReady && tag == voiceTag && microphone == null && audioStop == null && photoCallback == null)
+                startRecording(tag)
+                reply(id, JSONObject().put("started", microphone != null))
+                return
+            }
+            "entrance.arm" -> {
+                check(microphone == null && photoCallback == null)
+                photoTag = tag; voiceTag = null
+                photoCapability = request.optString("capabilityId", "vision.scene")
+            }
             "voice.disarm" -> { voiceTag = null; stopRecording(false) }
             "entrance.disarm" -> {
                 photoTag = null
@@ -316,7 +355,7 @@ open class CxrlAgentService : Service() {
             }
             else -> error("不支持的设备指令")
         }
-        device.command(type, tag) { it.fold({ reply(id, JSONObject().put("sent", true)) },
+        device.command(type, tag) { it.fold({ reply(id, JSONObject().put("sent", true).put("directVoiceStart", type == "voice.arm").put("speechStop", true)) },
             { reply(id, error = "设备指令发送失败") }) }
     }
 
@@ -325,7 +364,13 @@ open class CxrlAgentService : Service() {
         val type = packet.optString("type")
         val tag = packet.optString("payload")
         when (type) {
+            "play.stopped" -> {
+                if (speechStopReply == tag) { speechStopReply = null; reply(tag, JSONObject().put("stopped", true)) }
+                return
+            }
             "link.ready" -> {
+                device.command("input.configure", getSharedPreferences("agent_input", MODE_PRIVATE)
+                    .getBoolean("physical_shortcut", false).toString())
                 status("眼镜已握手；模型就绪后可按键开始")
                 device.command("status", if (modelsReady) "准备好了，短按开始；结束请在手机点停止任务与连接" else "模型正在准备，请稍候")
                 return
@@ -443,16 +488,14 @@ open class CxrlAgentService : Service() {
             override fun onImageReceived(data: ByteArray) { main.post {
                 if (attempt != generation || photoTag != tag || photoCallback !== this) return@post
                 clearPhoto()
-                if (data.size !in 1..2097152) { device.fail("图片大小异常"); return@post }
+                if (data.size !in 1..PhotoDecoder.MAX_BYTES) { device.fail("图片大小异常"); return@post }
                 worker.execute {
                     val result = runCatching {
-                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-                        BitmapFactory.decodeByteArray(data, 0, data.size, bounds)
-                        require(bounds.outWidth in 1..2048 && bounds.outHeight in 1..2048)
-                        val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size) ?: error("图片解码失败")
-                        try { ByteArrayOutputStream().use { output ->
-                            check(bitmap.compress(Bitmap.CompressFormat.JPEG, 85, output)); output.toByteArray()
-                        } } finally { bitmap.recycle() }
+                        val photo = PhotoDecoder.decode(data, forModel = true) ?: error("图片解码失败")
+                        try {
+                            diagnostic("photo.received", "width=${photo.metadata.width} height=${photo.metadata.height} bytes=${photo.metadata.bytes}")
+                            checkNotNull(photo.modelJpeg)
+                        } finally { photo.bitmap.recycle() }
                     }
                     main.post {
                         if (closed || attempt != generation) return@post
@@ -470,7 +513,9 @@ open class CxrlAgentService : Service() {
         }
         photoCallback = callback; photoSession = current
         current.addImageCallback(callback)
-        if (!current.takePhoto(640, 480, 80).isSuccess) device.fail("无法发起眼镜拍照")
+        val textCapture = photoCapability == "vision.menu"
+        if (!current.takePhoto(if (textCapture) 1920 else 1280, if (textCapture) 1080 else 720,
+                if (textCapture) 95 else 90).isSuccess) device.fail("无法发起眼镜拍照，请检查设备支持的图像规格")
         main.postDelayed({ if (photoCallback === callback) device.fail("拍照超时，连接已作废") }, 20000)
     }
     private fun clearPhoto() {
@@ -478,10 +523,11 @@ open class CxrlAgentService : Service() {
         photoCallback = null; photoSession = null; photoTag = null
     }
 
-    private fun say(text: String, local: Boolean, completed: (Boolean) -> Unit) {
+    private fun say(text: String, key: String, local: Boolean, completed: (Boolean) -> Unit) {
         if (!device.ready || !modelsReady || utterance != null) { completed(false); return }
         val attempt = generation
         val speechId = UUID.randomUUID().toString()
+        utteranceKey = key
         textTrace.record("speech", speechId, text)
         diagnostic("speech.request", "playId=$speechId chars=${text.length}")
         val pipeline = CxrlSpeechPlayback(
@@ -489,10 +535,11 @@ open class CxrlAgentService : Service() {
             play = { audio, done -> sendAudio(audio, attempt, speechId, done) },
             completed = { ok ->
                 utterance = null
+                utteranceKey = null
                 if (!ok) {
                     // 预合成失败或取消后，旧播放回执和超时不能影响下一轮任务。
                     plays.clear()
-                    if (attempt == generation && device.ready) device.command("task.cancel")
+                    if (!interruptingSpeech && attempt == generation && device.ready) device.command("task.cancel")
                 }
                 completed(ok)
             },
@@ -513,7 +560,7 @@ open class CxrlAgentService : Service() {
             pcm[index * 2] = n.toByte(); pcm[index * 2 + 1] = (n shr 8).toByte()
         }
         val hash = MessageDigest.getInstance("SHA-256").digest(pcm).joinToString("") { "%02x".format(it.toInt() and 255) }
-        val header = JSONObject().put("id", playId).put("bytes", pcm.size).put("rate", audio.sampleRate).put("sha256", hash)
+        val header = JSONObject().put("id", playId).put("speechKey", utteranceKey).put("bytes", pcm.size).put("rate", audio.sampleRate).put("sha256", hash)
         diagnostic("audio.send.start", "playId=$playId bytes=${pcm.size} rate=${audio.sampleRate} audioMs=${audio.samples.size * 1000L / audio.sampleRate}")
         fun failed() { plays.remove(playId)?.second?.invoke(false) }
         device.command("play.start", header.toString()) { result ->
@@ -537,8 +584,9 @@ open class CxrlAgentService : Service() {
         main.postDelayed({ if (plays.containsKey(playId)) { failed(); device.fail("眼镜播放回执超时") } }, 110000)
     }
     private fun computeSpeech(text: String, attempt: Long, playId: String, local: Boolean, done: (SpeechAudio?) -> Unit) {
-        worker.execute {
-            if (closed || attempt != generation) return@execute
+        val expectedSpeech = speechEpoch
+        speechWorker.execute {
+            if (closed || attempt != generation || expectedSpeech != speechEpoch) return@execute
             val started = SystemClock.elapsedRealtime()
             textTrace.record("tts.part", playId, text)
             diagnostic("tts.start", "playId=$playId")
@@ -547,7 +595,7 @@ open class CxrlAgentService : Service() {
                 val tools = cloudTools
                 if (tools != null && !local) {
                     speechCache.getOrSynthesize("deepseek:stella:pcm:$text") {
-                        tools.synthesize(text) { closed || attempt != generation }.also {
+                        tools.synthesize(text) { closed || attempt != generation || expectedSpeech != speechEpoch }.also {
                             AgentModelSettings(this).recordTts(text.codePointCount(0, text.length))
                         }
                     }
@@ -557,7 +605,7 @@ open class CxrlAgentService : Service() {
             }
             diagnostic("tts.complete", "playId=$playId elapsedMs=${SystemClock.elapsedRealtime() - started} success=${result.isSuccess} error=${result.exceptionOrNull()?.javaClass?.simpleName}")
             val audio = result.getOrNull()
-            main.post { if (!closed && attempt == generation) done(audio) }
+            main.post { if (!closed && attempt == generation && expectedSpeech == speechEpoch) done(audio) }
         }
     }
 
@@ -583,6 +631,8 @@ open class CxrlAgentService : Service() {
                     found.candidates.forEach { candidate ->
                         candidates.put(JSONObject().put("candidate_id", candidate.poiId?.takeIf { it.isNotBlank() }
                             ?: "amap:${candidate.latitude},${candidate.longitude}").put("name", candidate.name)
+                            .put("address", candidate.address).put("category", candidate.category)
+                            .apply { if (candidate.distanceM >= 0) put("distance_m", candidate.distanceM) }
                             .put("provider", "amap").put("location", JSONObject().put("lat", candidate.latitude).put("lng", candidate.longitude)))
                     }
                     result.put("status", "succeeded").put("output", JSONObject().put("candidates", candidates))
@@ -600,12 +650,14 @@ open class CxrlAgentService : Service() {
         val lat = location.getDouble("lat"); val lng = location.getDouble("lng")
         require(lat.isFinite() && lng.isFinite() && lat in -90.0..90.0 && lng in -180.0..180.0 && (lat != 0.0 || lng != 0.0))
         val session = payload.getString("sessionId")
+        val routeId = payload.optString("routeId", id)
         val attempt = generation
         route = session; startingRoute = id
-        fun current() = !closed && attempt == generation && route == session
+        activeRouteId = routeId
+        fun current() = !closed && attempt == generation && route == session && activeRouteId == routeId
         fun send(kind: String, detail: String = "", distance: Int? = null, weak: Boolean? = null) {
             if (!current()) return
-            val event = JSONObject().put("sessionId", session).put("kind", kind).put("detail", detail)
+            val event = JSONObject().put("sessionId", session).put("routeId", routeId).put("kind", kind).put("detail", detail)
             distance?.let { event.put("remainDistanceM", it) }; weak?.let { event.put("weak", it) }
             envelope("native.navigation", event)
         }
@@ -613,7 +665,7 @@ open class CxrlAgentService : Service() {
             override fun onRouteReady(distanceM: Int, timeSec: Int) {
                 if (!current() || startingRoute != id) return
                 startingRoute = null
-                reply(id, JSONObject().put("started", true).put("distanceM", distanceM).put("timeSec", timeSec))
+                reply(id, JSONObject().put("started", true).put("routeId", routeId).put("distanceM", distanceM).put("timeSec", timeSec))
             }
             override fun onRouteFailed(message: String) {
                 if (!current()) return
@@ -631,6 +683,9 @@ open class CxrlAgentService : Service() {
 
     private fun retire() {
         generation++
+        speechEpoch++
+        speechStopReply?.let { reply(it, error = "播报停止已撤销") }; speechStopReply = null
+        activeRouteId = null
         runCatching { cloud?.cancel() }
         runCatching { cloudTools?.cancel() }
         runCatching { utterance?.cancel() }; utterance = null

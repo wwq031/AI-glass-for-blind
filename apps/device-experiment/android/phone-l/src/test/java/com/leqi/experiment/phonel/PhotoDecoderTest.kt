@@ -13,6 +13,12 @@ import java.io.ByteArrayOutputStream
 @Config(sdk = [35], manifest = Config.NONE)
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PhotoDecoderTest {
+    @Test fun originalJpegReachesRecognitionByteForByte() {
+        val original = encoded(Bitmap.CompressFormat.JPEG)
+        val photo = PhotoDecoder.decode(original, forModel = true)!!
+        assertArrayEquals(original, photo.modelJpeg)
+        photo.bitmap.recycle()
+    }
     private fun encoded(format: Bitmap.CompressFormat): ByteArray {
         val bitmap = Bitmap.createBitmap(32, 24, Bitmap.Config.ARGB_8888)
         return ByteArrayOutputStream().use { output ->

@@ -15,13 +15,14 @@ import org.robolectric.annotation.Config
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [35], manifest = Config.NONE)
 class DeepSeekToolClientTest {
-    private class Response(private val bytes: ByteArray, private val status: Int = 200) :
+    private class Response(private val bytes: ByteArray, private val status: Int = 200, val onStatus: () -> Unit = {}) :
         HttpURLConnection(URL("https://api.deepseek.com")) {
         val sent = ByteArrayOutputStream()
+        var disconnected = false
         override fun getOutputStream() = sent
         override fun getInputStream() = ByteArrayInputStream(bytes)
-        override fun getResponseCode() = status
-        override fun disconnect() = Unit
+        override fun getResponseCode(): Int { onStatus(); return status }
+        override fun disconnect() { disconnected = true }
         override fun usingProxy() = false
         override fun connect() = Unit
     }
@@ -62,5 +63,18 @@ class DeepSeekToolClientTest {
         val client = DeepSeekToolClient("test-key") { error("cancelled request opened a connection") }
         val error = assertThrows(ModelServiceException::class.java) { client.synthesize("你好") { true } }
         assertEquals("cloud_cancelled", error.code)
+    }
+    @Test fun preemptingSpeechDoesNotCancelAnActiveTranscription() {
+        lateinit var client: DeepSeekToolClient
+        lateinit var asr: Response
+        lateinit var tts: Response
+        tts = Response(byteArrayOf(0, 1), onStatus = {
+            client.cancelSpeech()
+            assertTrue(tts.disconnected)
+            assertFalse(asr.disconnected)
+        })
+        asr = Response("""{"text":"你好"}""".toByteArray(), onStatus = { client.synthesize("普通回答") { false } })
+        client = DeepSeekToolClient("test-key") { if (it == "tts") tts else asr }
+        assertEquals("你好", client.transcribe(byteArrayOf(1, 2)) { false }.getString("text"))
     }
 }

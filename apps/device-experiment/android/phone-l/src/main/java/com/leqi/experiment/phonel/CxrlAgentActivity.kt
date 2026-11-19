@@ -29,13 +29,14 @@ class CxrlAgentActivity : Activity() {
     private var destroyed = false
     private var diagnosticMode = false
     private var textDiagnostics = false
+    private var notificationPermissionAsked = false
     private var diagnosticDevice: CxrlAgentDevice? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         manager = CxrSessionManager.getInstance(applicationContext)
         val layout = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 24, 24, 24) }
-        status = TextView(this).apply { textSize = 20f; text = "乐奇助盲\n首次连接后，在眼镜短按开始。录音中再短按结束。结束任务请在手机点停止任务与连接。" }
+        status = TextView(this).apply { textSize = 20f; text = "乐奇助盲\n连接就绪后：戒指左单击开始说话，再单击结束；中单击快捷输入目的地。长按会触发系统功能，请勿用于本应用。结束任务可说取消，或在手机点停止任务与连接。" }
         layout.addView(status)
         fun button(title: String, action: () -> Unit) {
             layout.addView(Button(this).apply { text = title; setOnClickListener { action() } })
@@ -47,6 +48,12 @@ class CxrlAgentActivity : Activity() {
             diagnosticDevice?.close(); diagnosticDevice = null
             stopService(Intent(this, CxrlAgentService::class.java)); status.text = "已停止；再次连接不会恢复旧任务"
         }
+        val inputSettings = getSharedPreferences("agent_input", MODE_PRIVATE)
+        layout.addView(CheckBox(this).apply {
+            text = "允许眼镜功能键启动（可能与系统助手冲突，下次连接生效）"
+            isChecked = inputSettings.getBoolean("physical_shortcut", false)
+            setOnCheckedChangeListener { _, checked -> inputSettings.edit().putBoolean("physical_shortcut", checked).apply() }
+        })
         if (applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0) {
             layout.addView(CheckBox(this).apply {
                 text = "下次连接记录识别与播报文字（诊断用）"
@@ -122,12 +129,12 @@ class CxrlAgentActivity : Activity() {
         diagnosticMode = diagnostics && applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE != 0
         diagnosticDevice?.close(); diagnosticDevice = null
         if (diagnosticMode) stopService(Intent(this, CxrlAgentService::class.java))
-        val required = mutableListOf(Manifest.permission.BLUETOOTH_CONNECT)
-        if (!diagnosticMode) {
-            required.addAll(listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
-            if (Build.VERSION.SDK_INT >= 33) required.add(Manifest.permission.POST_NOTIFICATIONS)
+        val missing = missingConnectionPermissions(diagnosticMode).toMutableList()
+        if (!diagnosticMode && Build.VERSION.SDK_INT >= 33 && !notificationPermissionAsked &&
+            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+            notificationPermissionAsked = true
+            missing.add(Manifest.permission.POST_NOTIFICATIONS)
         }
-        val missing = required.filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
         if (missing.isNotEmpty()) {
             requestPermissions(missing.toTypedArray(), 501)
             status.text = "请完成权限授权，再点击连接；授权本身不会录音或拍照"
@@ -164,7 +171,7 @@ class CxrlAgentActivity : Activity() {
         try {
         startForegroundService(Intent(this, CxrlAgentService::class.java).putExtra("token", token)
             .putExtra("textDiagnostics", textDiagnostics))
-        status.text = "正在准备本地模型和眼镜连接，进度见通知。\n眼镜提示就绪后：短按开始，提示后短按录音，再短按结束。结束任务请在手机点停止任务与连接。"
+        status.text = "正在准备模型和眼镜连接，进度见通知。\n就绪后：戒指左单击开始说话，再单击结束；中单击快捷输入目的地。结束任务请在手机点停止任务与连接。"
         } catch (_: RuntimeException) {
             status.text = "服务未能启动，请确认权限、定位开关及应用在前台后重新连接"
         }
@@ -201,6 +208,22 @@ class CxrlAgentActivity : Activity() {
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
         if (requesting) runCatching { manager.parseAuthorizationResult(resultCode, data) }.onSuccess(::accept)
+    }
+    internal fun missingConnectionPermissions(diagnostics: Boolean): List<String> {
+        val missing = mutableListOf<String>()
+        if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED)
+            missing.add(Manifest.permission.BLUETOOTH_CONNECT)
+        if (!diagnostics && checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED &&
+            checkSelfPermission(Manifest.permission.ACCESS_COARSE_LOCATION) != PackageManager.PERMISSION_GRANTED)
+            missing.addAll(listOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+        return missing
+    }
+    override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (requestCode == 501 && !destroyed) {
+            if (missingConnectionPermissions(diagnosticMode).isEmpty()) connect(diagnosticMode)
+            else status.text = "连接需要附近设备及定位权限，请在设置中授权后重试"
+        }
     }
     override fun onDestroy() { destroyed = true; diagnosticDevice?.close(); super.onDestroy() }
 }

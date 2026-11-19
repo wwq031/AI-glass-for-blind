@@ -63,7 +63,8 @@ export interface ToolRuntime {
   /** Consumes the capture the user authorised for exactly this capability, once. */
   takeCapture(capabilityId: string): AuthorisedCapture | undefined;
   routeRunning(sessionId: string): boolean;
-  onRouteStarted(sessionId: string, candidate: DestinationCandidate): void;
+  onRouteStarted(sessionId: string, candidate: DestinationCandidate, routeId?: string): void;
+  onRouteStopped?(sessionId: string): void;
   /**
    * Announces a question and opens the window its answer will arrive on. Resolves once the device
    * really announced it and the window is open; `expiresAt` bounds how long it may wait.
@@ -259,6 +260,7 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
     if (runtime.routeRunning(call.session_id)) {
       // The device runs one route at a time and never silently replaces it, so switching destination
       // stops the route the user is leaving before the confirmed one starts.
+      runtime.onRouteStopped?.(call.session_id);
       await runtime.native("policy.navigation.stop", { sessionId: call.session_id });
       // Stopping the old route is itself a side effect. If this call was retired while it ran — by a
       // cancel, or by the timeout of the call that issued it — no new route may be started on top.
@@ -266,8 +268,8 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
         return { status: "partial", output: { cancelled: true } };
       }
     }
-    const started = await runtime.native<{ started?: boolean; distanceM?: number; timeSec?: number }>(
-      "policy.navigation.start", { sessionId: call.session_id, candidate });
+    const started = await runtime.native<{ started?: boolean; distanceM?: number; timeSec?: number; routeId?: string }>(
+      "policy.navigation.start", { sessionId: call.session_id, candidate, routeId: call.call_id });
     if (started === undefined || retired(runtime, context, generation) || runtime.parentAborted()) {
       // A route that started under a call which has since been abandoned is stopped again: the
       // timeout of the confirmation must not leave the user walking a route nobody is guiding.
@@ -277,7 +279,7 @@ export function createToolHandlers(runtime: ToolRuntime): ReadonlyMap<string, To
       return { status: "partial", output: { cancelled: true } };
     }
     if (started.started !== true) throw new Error("native walking navigation did not confirm start");
-    runtime.onRouteStarted(call.session_id, candidate);
+    runtime.onRouteStarted(call.session_id, candidate, started.routeId);
     return {
       output: { candidate_id: candidate.candidate_id, started: true, distance_m: started.distanceM, time_sec: started.timeSec },
       events: [{ type: "navigation.started", payload: { candidate_id: candidate.candidate_id } }],

@@ -24,4 +24,6 @@ export class MobileAgentHost {
   async accept(wireEvent: unknown, permissions?: ExecutionPermissions): Promise<AgentHandleOutput> {
     return this.runtime.handle(decodeAgentEvent(wireEvent), permissions);
   }
+
+  abandonFeedback(sessionId: string): void { this.runtime.abandonFeedback(sessionId); }
 }

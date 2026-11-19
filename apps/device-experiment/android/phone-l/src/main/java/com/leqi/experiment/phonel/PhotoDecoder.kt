@@ -31,14 +31,15 @@ internal object PhotoDecoder {
         if (!validBounds(bounds.outWidth, bounds.outHeight) ||
             bounds.outMimeType !in setOf("image/webp", "image/jpeg")) return null
         val bitmap = BitmapFactory.decodeByteArray(data, 0, data.size,
-            BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.RGB_565 }) ?: return null
+            BitmapFactory.Options().apply { inPreferredConfig = Bitmap.Config.ARGB_8888 }) ?: return null
         if (!validBounds(bitmap.width, bitmap.height) ||
             bitmap.width != bounds.outWidth || bitmap.height != bounds.outHeight) {
             bitmap.recycle()
             return null
         }
-        val jpeg = if (forModel) ByteArrayOutputStream().use {
-            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 90, it) || it.size() > MAX_BYTES) {
+        val jpeg = if (forModel && bounds.outMimeType == "image/jpeg") data.copyOf()
+        else if (forModel) ByteArrayOutputStream().use {
+            if (!bitmap.compress(Bitmap.CompressFormat.JPEG, 95, it) || it.size() > MAX_BYTES) {
                 bitmap.recycle(); return null
             }
             it.toByteArray()

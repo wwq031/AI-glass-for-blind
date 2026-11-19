@@ -125,6 +125,11 @@ export class SessionFactStore {
     this.latestObservationBatch.delete(sessionId);
   }
 
+  clearNavigation(sessionId: string): void {
+    this.facts.set(sessionId, (this.facts.get(sessionId) ?? []).filter(fact =>
+      !isNavigationSource(fact.source) && !fact.name.startsWith("navigation.")));
+  }
+
   private withinScope(sessionId: string, live: SessionFact[], scope: FactsQueryScope): SessionFact[] {
     if (scope === "navigation_context") return live.filter((fact) => isNavigationSource(fact.source));
     if (scope !== "recent_observation") return live;

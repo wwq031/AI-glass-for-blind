@@ -2,6 +2,7 @@ import type { AgentEvent } from "../../../../packages/domain/agent/types.ts";
 
 export interface NativeNavigationPayload {
   sessionId: string;
+  routeId?: string;
   kind: string;
   detail?: string;
   remainDistanceM?: number;

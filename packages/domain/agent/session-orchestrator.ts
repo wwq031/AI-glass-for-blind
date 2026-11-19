@@ -79,6 +79,18 @@ export class SessionOrchestrator {
     return { sessionId: view.sessionId, lastSequence: view.lastSequence, activePlanId: view.activePlanId };
   }
 
+  /** Ends a bounded planning continuation without cancelling the user's conversation or route. */
+  abandonFeedback(sessionId: string): void {
+    const session = this.getSession(sessionId);
+    session.pendingFeedback = undefined;
+    session.pendingCrossingCallId = undefined;
+    session.pendingCrossingEvidenceStale = undefined;
+    session.crossingPending = false;
+    session.crossingContext = undefined;
+    session.view.navigation = undefined;
+    session.view.activePlanId = undefined;
+  }
+
   /**
    * Feed followUpEvents back explicitly. While feedback is pending, an unrelated Event is
    * rejected with pending_feedback; submit it again with a new sequence after feedback.
